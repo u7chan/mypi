@@ -1,14 +1,14 @@
-# pi-lab からの移行記録
+# pi-labからの移行記録
 
-移植元: [u7chan/pi-lab](https://github.com/u7chan/pi-lab)、main `0bb84a0`（PR #20 マージ後）。
-移行先: [u7chan/mypi](https://github.com/u7chan/mypi)。
-対象は確定方針の６機能だけです。skill-dispatch と他の PoC は含みません。
-pi-lab の元コード・配布 manifest は変更していません。
+移植元は[u7chan/pi-lab](https://github.com/u7chan/pi-lab)のmain `0bb84a0`（PR #20マージ後）です。
+移行先は[u7chan/mypi](https://github.com/u7chan/mypi)です。
+対象は確定した方針にある6機能だけです。skill-dispatchと他のPoCは含みません。
+pi-labの元のコードと配布マニフェストは変更していません。
 
-公開ライセンスはユーザー指定の [MIT License](../LICENSE) です。
-著作権表記は `Copyright (c) 2026 u7chan` とし、`package.json` にも `MIT` を記載しています。
+公開ライセンスはユーザー指定の[MIT License](../LICENSE)です。
+著作権表記は`Copyright (c) 2026 u7chan`とし、`package.json`にも`MIT`を記載しています。
 
-## 対応
+## 機能とファイルの対応
 
 | pi-lab | mypi |
 |---|---|
@@ -19,48 +19,49 @@ pi-lab の元コード・配布 manifest は変更していません。
 | `u7chan-lab-git-status` | `src/git-status/`、`tests/git-status.test.ts` |
 | `u7chan-lab-elapsed` | `src/elapsed/`、`tests/elapsed.test.ts` |
 
-adapter の相対 import とテスト参照を変更し、１入口から各登録関数を１回ずつ呼びます。
-機能ごとの closure/controller、status key、コマンド・ツール、lifecycle は維持しました。
-elapsed の確定は `agent_end` ではなく `agent_settled` のままです。
+アダプターの相対importとテストの参照先を変更し、1つのエントリーポイントから各登録関数を1回ずつ呼びます。
+機能ごとのクロージャー・コントローラー、ステータスキー、コマンド・ツール、ライフサイクルは維持しました。
+elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agent_settled`です。
 
-### 移植時の補修
+### 移植時の修正
 
-- default-model: 欠損ファイル以外の read error・不正 JSON・非 object を空設定と扱わず、
-  原本を上書きしない。固有の一時ファイル、失敗時 cleanup、既存の権限保持を追加。
-  mutation queue は read-modify-write 全体を囲み、ツール結果には Pi 1.0.0 必須の `details` を追加。
-- minimal-footer: コマンド側も TUI/hasUI を guard。
-  全角 session 名で40列指定に70列の行が出る旧実装の問題を実測したため、実 TUI は host の
-  `visibleWidth` / `truncateToWidth` を利用するよう修正。OSC 8 の閉じも host で維持する。
-  core 単体・host なしテストには従来の ASCII/ANSI/OSC 用 fallback を残す。
+- default-model: ファイルの欠損以外の読み取りエラー、不正なJSON、オブジェクト以外の値は空の設定として扱わず、
+  元のファイルを上書きしないようにしました。一時ファイルを固有の名前で作成し、
+  失敗時の後処理と既存のファイル権限の保持を追加しました。
+  設定の読み取り・変更・書き込みをすべて更新キュー内で行い、ツール結果にはPi 1.0.0で必須の`details`を追加しました。
+- minimal-footer: コマンド側にもTUIと`hasUI`のガードを追加しました。
+  旧実装では全角のセッション名を使うと、40列の指定に対して70列の行が表示されることを実測で確認しました。
+  そのため、実際のTUIではホストの`visibleWidth` / `truncateToWidth`を使うように修正しました。
+  OSC 8リンクを閉じる処理もホスト側で維持しました。
+  コア単体のテストやホストなしのテストには、従来のASCII/ANSI/OSC用フォールバックを残しました。
 
 ## 確認結果
 
-環境: WSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.0.0。
+環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.0.0です。
 
-- `bun test`: 移植した６機能のテスト、追加回帰・単一入口テストの129件が成功（失敗0件）。
-- `node scripts/smoke-pi.mjs`: **実際の DefaultResourceLoader がパッケージから１入口をロード**。
-  コマンド３件、ツール１件、複数 handler の共存を確認。
-  ローカル mock provider と実際の AgentSession の retry loop（約4.4秒）で、最初の
-  `agent_end` 後も elapsed が継続し、settle 時に４秒で確定した。
-  payload による TTL countdown、cache savings、git/PR fixture、footer toggle、model 切り替え、
-  settings 保存、shutdown の status/timer cleanup を確認。
-  host の列幅関数で0〜160列・全角/emoji/結合文字の session 名を検証。
-- `scripts/smoke-tui.mjs`: 実際の CLI の **regular / fullscreen 対話 TUI** を PTY で起動。
-  Extensions 欄は mypi の１項目。ローカル HTTP mock で working の秒更新、
-  `SAVED … CACHE hit ELAPSED …`、次の指示での elapsed クリアを確認。
-  regular では `/minimal-footer` 往復、`/dm` picker とキャンセル、既定モデル変更と
-  `set_default_model` の model 発行 tool call を確認（保存先は一時 agent directory）。
-  fullscreen では git/PR fixture の OSC 8 リンクと他 status の共存、長い全角 session 名の
-  切り詰めを確認。両モードとも `/quit` で終了コード0。
+- `bun test`: 移植した6機能のテスト、追加の回帰テスト、単一エントリーポイントのテストの計129件が成功しました。失敗は0件です。
+- `node scripts/smoke-pi.mjs`: 実際のDefaultResourceLoaderでパッケージから1つのエントリーポイントをロードしました。
+  コマンド3件、ツール1件、複数ハンドラーの共存を確認しました。
+  ローカルのモックプロバイダーと実際のAgentSessionの再試行ループ（約4.4秒）で、最初の
+  `agent_end`後もelapsedが継続し、settle時に4秒で確定することを確認しました。
+  ペイロードによるTTLカウントダウン、キャッシュ節約額、git/PRのフィクスチャ、フッターの切り替え、モデルの切り替え、
+  設定の保存、終了時のステータスとタイマーの後処理を確認しました。
+  ホストの列幅関数を使い、0〜160列の表示幅と、全角・絵文字・結合文字のセッション名を検証しました。
+- `scripts/smoke-tui.mjs`: 実際のCLIのregular / fullscreen対話TUIをPTYで起動しました。
+  Extensions欄はmypiの1項目でした。ローカルHTTPモックでworkingメッセージが毎秒更新されること、
+  `SAVED … CACHE hit ELAPSED …`の表示、次の指示でelapsedが消えることを確認しました。
+  regularでは`/minimal-footer`の切り替え、`/dm`の選択画面とキャンセル、既定モデルの変更、
+  モデルによる`set_default_model`のツール呼び出しを確認しました。保存先は一時エージェントディレクトリです。
+  fullscreenではgit/PRのフィクスチャによるOSC 8リンクと他のステータスの共存、長い全角のセッション名の
+  切り詰めを確認しました。両モードとも`/quit`で終了し、終了コードは0でした。
 
-SDK は UI sink を注入した検証、対話 TUI は実 CLI の描画検証です。
-これらは provider の本番サービスや GitHub の PR を使った検証ではありません。
+SDKではUI sinkを注入して検証し、対話TUIでは実際のCLIの描画を検証しました。
+これらはプロバイダーの本番サービスやGitHubのPRを使った検証ではありません。
 
-## 残る確認・別途判断
+## 未確認事項・別途判断
 
-- 実 provider の payload/料金による推定の妥当性、実 GitHub PR の取得、端末側のリンククリック。
-- 常用環境の外部拡張との組み合わせ、実ユーザーの設定を用いた切り替え。
-- 初回コミット・push 後の `pi install git:github.com/u7chan/mypi@main` と更新。
+- 実際のプロバイダーのペイロード・料金に基づく推定の妥当性、実際のGitHub PRの取得、端末でのリンクのクリック。
+- 常用環境の外部拡張との組み合わせ、実際のユーザー設定を使った切り替え。
+- 初回コミット・push後の`pi install git:github.com/u7chan/mypi@main`によるインストールと更新。
 
-常用環境にはインストールしていません。pi-lab の配布停止、常用設定の変更は
-ユーザーの別途指示を待ちます。
+常用環境にはインストールしていません。pi-labの配布停止や常用設定の変更は、ユーザーからの別途指示を待ちます。
