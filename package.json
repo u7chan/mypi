@@ -1,0 +1,26 @@
+{
+  "name": "mypi",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Personal production Pi extension set: cache TTL/savings, minimal footer, default model, git/PR links, and elapsed time.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/u7chan/mypi.git"
+  },
+  "keywords": ["pi-package"],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "bun test",
+    "smoke:pi": "node scripts/smoke-pi.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": ["extensions/index.ts"]
+  }
+}
