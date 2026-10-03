@@ -5,6 +5,9 @@
 対象は確定方針の６機能だけです。skill-dispatch と他の PoC は含みません。
 pi-lab の元コード・配布 manifest は変更していません。
 
+公開ライセンスはユーザー指定の [MIT License](../LICENSE) です。
+著作権表記は `Copyright (c) 2026 u7chan` とし、`package.json` にも `MIT` を記載しています。
+
 ## 対応
 
 | pi-lab | mypi |
@@ -58,7 +61,6 @@ SDK は UI sink を注入した検証、対話 TUI は実 CLI の描画検証で
 - 実 provider の payload/料金による推定の妥当性、実 GitHub PR の取得、端末側のリンククリック。
 - 常用環境の外部拡張との組み合わせ、実ユーザーの設定を用いた切り替え。
 - 初回コミット・push 後の `pi install git:github.com/u7chan/mypi@main` と更新。
-- 公開ライセンスの選定（移植元にも LICENSE がないため、この作業では新規指定しない）。
 
 常用環境にはインストールしていません。pi-lab の配布停止、常用設定の変更は
 ユーザーの別途指示を待ちます。

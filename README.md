@@ -111,6 +111,10 @@ scripts/smoke-*.mjs        # 実際の Pi での隔離検証
 
 移植元・変更点・検証範囲は [移行記録](docs/migration.md) を参照してください。
 
+## ライセンス
+
+[MIT License](LICENSE)。Copyright (c) 2026 u7chan。
+
 ## 既知の制約
 
 - TTL は request 開始時刻を基準にした推定で、provider の実 expiry ではありません。

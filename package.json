@@ -1,6 +1,7 @@
 {
   "name": "mypi",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Personal production Pi extension set: cache TTL/savings, minimal footer, default model, git/PR links, and elapsed time.",
   "repository": {
