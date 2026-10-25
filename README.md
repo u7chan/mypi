@@ -15,14 +15,15 @@
 |---|---|
 | cache-ttl | 送信ペイロードのキャッシュメタデータから推定した残り時間を`ttl 4:31`のように表示します。TTLがない場合は状態を`cache auto` / `cache off` / `cache hit` / `cache expired`で示し、情報のない`pending`と`unknown`は表示しません |
 | cache-reuse | アシスタントの最新の応答でキャッシュから読まれたトークン数を`cached 1.5k`と表示します。金額の推定はしません。ヒットしなかった応答やモデル・セッションの切り替え時には表示を消します |
-| minimal-footer | トークン数・コストの統計ブロックを除き、cwd・ブランチ・セッション名、コンテキスト使用率、モデル・thinking、各ステータスを表示します。`/minimal-footer`でPi標準のフッターと切り替えます |
+| minimal-footer | トークン数・コストの統計ブロックを除いた2行のフッターに、cwd・ブランチ・セッション名、コンテキスト使用率、モデル・thinking（`zai glm-5.3-flash max`）、各ステータスを表示します。`/minimal-footer`でPi標準のフッターと切り替えます |
 | default-model | `/dm`（別名`/default-model`）と`set_default_model`ツールで起動時の既定モデル・thinkingを保存します |
 | git-status | origin（なければupstreamまたは最初のリモート）のリポジトリと、現在のブランチのPRをフッターにOSC 8リンクとして表示します |
 | elapsed | `before_agent_start`から`agent_settled`までの経過時間を`Working (12m 3s)`にリアルタイムで表示し、確定値を`elapsed 12m 3s`としてフッターに残します |
 | tok-rate | 生成中は最新の assistant 応答の速度を`4.6 tok/s`（差分からの推定）で表示し、指示が落ち着いたら成功メッセージの合計`usage.output`÷合計生成時間を`avg 92 tok/s`で表示します |
 
-ステータスは（minimal-footer有効時に）`elapsed` / `tok` / `cache-ttl` / `cache-reuse`の順に並べ、他の拡張のステータスはキー順でその後に、`git`は最後に置きます。
-区切りは` · `で、ラベルはdim、値は通常色にします。Pi標準フッターへ切り替えると、並びはキー順、区切りはスペースに戻ります（ラベルと色は同じです）。
+minimal-footerのステータスはコンテキスト使用率と同じ行に`5.0k/256k (2.0%) · elapsed 2s · 4.6 tok/s · ttl 4:31 · cached 1k`のように並べ、`elapsed` / `tok` / `cache-ttl` / `cache-reuse`の順、他の拡張はキー順でその後、`git`は最後に置きます。
+区切りは` · `で、ラベルはdim、値は通常色にします。幅が足りない場合は右寄せのモデル情報を`provider model level` → `model level` → `model` → 非表示の順に落とし、ステータスを優先します。
+Pi標準フッターへ切り替えると、ステータスは独立した行に戻り、並びはキー順、区切りはスペースになります（ラベルと色は同じです）。
 OSC 8リンクは表示幅に含めず、切り詰める際にはリンクを閉じます。
 実際のTUIでは、列幅と書記素を扱うPiのユーティリティを使用します。
 

@@ -109,14 +109,14 @@ test("shared events compose, statuses coexist in minimal footer, and shutdown st
 		await h.emit("agent_settled");
 		expect(h.statuses.get("elapsed")).toMatch(/^elapsed [1-9]\d*s$/);
 		const lines = h.component.render(160);
-		expect(lines[2]).toMatch(/^elapsed .* · ttl .* · cached 1k · .*example\/fixture.*PR #7/);
-		expect(lines[2]).not.toMatch(/\$|SAVED|CACHE|ELAPSED/);
+		expect(lines[1]).toMatch(/elapsed .* · ttl .* · cached 1k · .*example\/fixture.*PR #7/);
+		expect(lines[1]).not.toMatch(/\$|SAVED|CACHE|ELAPSED/);
 		expect(lines[1]).not.toMatch(/[↑↓]|CH|\$/);
 		await h.commands.get("minimal-footer").handler("", h.ctx);
 		expect(h.component).toBeUndefined();
 		expect(h.branchSubscriptions).toBe(0);
 		await h.commands.get("minimal-footer").handler("", h.ctx);
-		expect(h.component.render(160)[2]).toContain("PR #7");
+		expect(h.component.render(160)[1]).toContain("PR #7");
 		await h.emit("model_select");
 		expect(h.statuses.has("cache-ttl")).toBe(false);
 		expect(h.statuses.has("cache-reuse")).toBe(false);

@@ -8,8 +8,8 @@
  * drops the always-growing token/cost block entirely.
  *
  * The rendering mirrors the built-in footer component (cwd line, context
- * colouring thresholds, right-aligned model info, alphabetically sorted
- * statuses) so switching between them does not feel different.
+ * colouring thresholds, right-aligned model info) but folds the extension
+ * statuses onto the stats line, so the footer stays two lines high.
  */
 
 export interface MinimalFooterTheme {
@@ -158,53 +158,83 @@ function sanitizeStatusText(text: string): string {
 	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 }
 
-/** `2.0%/256k` or `?/256k`, coloured by the built-in thresholds. */
+/** `232k/1.0M (23.2%)` or `?/256k`, coloured by the built-in thresholds. */
 function formatContextUsage(input: FooterRenderInput): string {
 	const contextWindow = input.contextUsage?.contextWindow ?? input.model?.contextWindow ?? 0;
 	const windowText = formatFooterTokens(contextWindow);
+	const tokens = input.contextUsage?.tokens;
+	const usedText = tokens === null || tokens === undefined ? "?" : formatFooterTokens(tokens);
 	const percent = input.contextUsage?.percent;
-	const text = percent === null || percent === undefined ? `?/${windowText}` : `${percent.toFixed(1)}%/${windowText}`;
+	const percentText = percent === null || percent === undefined ? "" : ` (${percent.toFixed(1)}%)`;
+	const text = `${usedText}/${windowText}${percentText}`;
 	if (percent === null || percent === undefined) return input.theme.fg("dim", text);
 	if (percent > 90) return input.theme.fg("error", text);
 	if (percent > 70) return input.theme.fg("warning", text);
 	return input.theme.fg("dim", text);
 }
 
-/** Right side of the stats line: `(provider) model • level`, as the built-in. */
-function formatModelInfo(input: FooterRenderInput): string {
+/**
+ * Right side of the stats line in decreasing verbosity: `provider model level`,
+ * `model level`, then the bare model id.  Single spaces keep the line easy to
+ * copy into `/dm provider/model:level`; the first variant that fits alongside
+ * every status wins, so a narrow terminal drops the provider before it drops
+ * cache information.
+ */
+function formatModelInfoVariants(input: FooterRenderInput): string[] {
 	const modelName = input.model?.id || "no-model";
-	let info = modelName;
+	const variants = [modelName];
 	if (input.model?.reasoning) {
-		const level = input.thinkingLevel || "off";
-		info = level === "off" ? `${modelName} • thinking off` : `${modelName} • ${level}`;
+		variants.unshift(`${modelName} ${input.thinkingLevel || "off"}`);
 	}
 	if (input.footerData.getAvailableProviderCount() > 1 && input.model?.provider) {
-		info = `(${input.model.provider}) ${info}`;
+		variants.unshift(`${input.model.provider} ${variants[0]}`);
 	}
-	return info;
+	return variants;
 }
 
-function joinLeftRight(left: string, right: string, width: number, metrics: FooterTextMetrics): string {
-	const minWidth = metrics.visibleWidth(left);
-	const rightWidth = metrics.visibleWidth(right);
-	const totalNeeded = minWidth + 2 + rightWidth;
-	if (totalNeeded <= width) {
-		return left + " ".repeat(width - minWidth - rightWidth) + right;
+/**
+ * `used/window (percent) · statuses` on the left, model info right-aligned.
+ *
+ * When no model variant fits next to all statuses, the statuses keep the line
+ * and the model is dropped: cache watching is the reason this footer exists.
+ */
+function buildStatsLine(
+	input: FooterRenderInput,
+	statuses: string[],
+	width: number,
+	metrics: FooterTextMetrics,
+): string {
+	const { theme } = input;
+	const left = formatContextUsage(input);
+	const separator = theme.fg("dim", STATUS_SEPARATOR);
+	const statusText = statuses.join(separator);
+	const leftWidth = metrics.visibleWidth(left);
+	const statusWidth = statuses.length > 0 ? metrics.visibleWidth(separator) + metrics.visibleWidth(statusText) : 0;
+	const body = statuses.length > 0 ? left + separator + statusText : left;
+	const bodyWidth = leftWidth + statusWidth;
+
+	for (const info of formatModelInfoVariants(input)) {
+		const right = theme.fg("dim", info);
+		const rightWidth = metrics.visibleWidth(right);
+		if (bodyWidth + 2 + rightWidth <= width) {
+			const padding = " ".repeat(width - bodyWidth - rightWidth);
+			return metrics.truncateToWidth(body + padding + right, width, "");
+		}
 	}
-	const availableForRight = width - minWidth - 2;
-	if (availableForRight > 0) {
-		const truncatedRight = metrics.truncateToWidth(right, availableForRight, "");
-		const padding = " ".repeat(Math.max(0, width - minWidth - metrics.visibleWidth(truncatedRight)));
-		return left + padding + truncatedRight;
+
+	const statusRoom = Math.max(0, width - leftWidth - metrics.visibleWidth(separator));
+	if (statuses.length === 0 || statusRoom === 0) {
+		return metrics.truncateToWidth(left, width, "");
 	}
-	return left;
+	const truncated = metrics.truncateToWidth(statusText, statusRoom, theme.fg("dim", "..."));
+	return metrics.truncateToWidth(truncated ? left + separator + truncated : left, width, "");
 }
 
 /**
  * The stats-free footer lines:
  * 1. `~/cwd (branch) • session`
- * 2. `context%/window` … right-aligned model info (no token/cost stats)
- * 3. extension statuses, sorted by key like the built-in footer
+ * 2. `used/window (percent) · statuses` … right-aligned model info (no token/cost
+ *    stats), the statuses sorted by key like the built-in footer
  */
 export function buildFooterLines(
 	input: FooterRenderInput,
@@ -218,17 +248,9 @@ export function buildFooterLines(
 	if (input.sessionName) pwd = `${pwd} • ${input.sessionName}`;
 	const pwdLine = metrics.truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
 
-	const left = formatContextUsage(input);
-	const right = formatModelInfo(input);
-	const statsLine = joinLeftRight(left, theme.fg("dim", right), width, metrics);
-
-	const lines = [pwdLine, metrics.truncateToWidth(statsLine, width, "")];
 	const statuses = Array.from(input.footerData.getExtensionStatuses().entries())
 		.sort(([a], [b]) => statusRank(a) - statusRank(b) || a.localeCompare(b))
 		.map(([, text]) => sanitizeStatusText(text));
-	if (statuses.length > 0) {
-		const separator = theme.fg("dim", STATUS_SEPARATOR);
-		lines.push(metrics.truncateToWidth(statuses.join(separator), width, theme.fg("dim", "...")));
-	}
-	return lines;
+
+	return [pwdLine, buildStatsLine(input, statuses, width, metrics)];
 }
