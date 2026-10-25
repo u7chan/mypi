@@ -76,7 +76,7 @@ function createHarness(mode = "tui", hasUI = true) {
 	};
 }
 
-test("manifest exposes one entry, which registers exactly the six feature signatures", () => {
+test("manifest exposes one entry, which registers exactly the seven feature signatures", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	expect(manifest.pi.extensions).toEqual(["extensions/index.ts"]);
 	expect(manifest.dependencies).toBeUndefined();
@@ -84,8 +84,9 @@ test("manifest exposes one entry, which registers exactly the six feature signat
 	expect([...h.commands.keys()]).toEqual(["minimal-footer", "dm", "default-model"]);
 	expect([...h.tools.keys()]).toEqual(["set_default_model"]);
 	expect(Object.fromEntries([...h.handlers].map(([event, list]) => [event, list.length]))).toEqual({
-		session_start: 4, message_end: 2, model_select: 2, session_shutdown: 4,
-		before_provider_request: 1, tool_execution_end: 1, agent_settled: 2, before_agent_start: 1,
+		session_start: 4, message_start: 1, message_end: 3, model_select: 2, session_shutdown: 5,
+		before_provider_request: 1, tool_execution_end: 1, agent_settled: 2, before_agent_start: 2,
+		message_update: 1,
 	});
 	expect(h.handlers.has("agent_end")).toBe(false);
 });

@@ -55,7 +55,9 @@ try {
 	const extension = loaded.extensions[0];
 	assert.equal(extension.path, join(root, "extensions/index.ts"));
 	assert.equal(extension.handlers.get("session_start").length, 4);
-	assert.equal(extension.handlers.get("message_end").length, 2);
+	assert.equal(extension.handlers.get("message_start").length, 1);
+	assert.equal(extension.handlers.get("message_end").length, 3);
+	assert.equal(extension.handlers.get("message_update").length, 1);
 	assert.equal(extension.handlers.get("agent_settled").length, 2);
 	assert.deepEqual([...extension.commands.keys()], ["minimal-footer", "dm", "default-model"]);
 	assert.deepEqual([...extension.tools.keys()], ["set_default_model"]);
@@ -142,6 +144,7 @@ try {
 	assert.equal(statuses.get("elapsed"), `ELAPSED ${Math.floor(duration / 1000)}s`);
 	assert.match(statuses.get("cache-ttl"), /^CACHE 00:/);
 	assert.match(statuses.get("cache-savings"), /^SAVED 1k tok ~\$/);
+	assert.match(statuses.get("tok"), /^TOK\/S 0\.\d$/);
 	assert.match(component.render(160)[2], /SAVED .*CACHE .*ELAPSED .*example\/fixture.*PR #7/);
 	// OSC 8 link widths and closing are checked with the host's actual parser.
 	session.setSessionName("確認👩‍💻é".repeat(50));
@@ -171,7 +174,7 @@ try {
 	component?.dispose(); component = undefined;
 	assert.equal(branchSubscriptions, 0);
 	assert.deepEqual(errors, []);
-	console.log(`Pi ${JSON.parse(readFileSync(join(host, "package.json"), "utf8")).version}: one entry, six features, retry ${duration}ms, isolated settings, cleanup OK`);
+	console.log(`Pi ${JSON.parse(readFileSync(join(host, "package.json"), "utf8")).version}: one entry, seven features, retry ${duration}ms, isolated settings, cleanup OK`);
 } finally {
 	if (session) {
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });

@@ -18,6 +18,7 @@ pi-labの元のコードと配布マニフェストは変更していません�
 | `u7chan-lab-default-model` | `src/default-model/`、`tests/default-model.test.ts` |
 | `u7chan-lab-git-status` | `src/git-status/`、`tests/git-status.test.ts` |
 | `u7chan-lab-elapsed` | `src/elapsed/`、`tests/elapsed.test.ts` |
+| （新規） | `src/tok-rate/`、`tests/tok-rate.test.ts` |
 
 アダプターの相対importとテストの参照先を変更し、1つのエントリーポイントから各登録関数を1回ずつ呼びます。
 機能ごとのクロージャー・コントローラー、ステータスキー、コマンド・ツール、ライフサイクルは維持しました。
@@ -34,6 +35,12 @@ elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agen
   そのため、実際のTUIではホストの`visibleWidth` / `truncateToWidth`を使うように修正しました。
   OSC 8リンクを閉じる処理もホスト側で維持しました。
   コア単体のテストやホストなしのテストには、従来のASCII/ANSI/OSC用フォールバックを残しました。
+
+## mypiで追加した機能
+
+- tok-rate: Pi本体にもpi-labにも生成速度の表示がないため、mypiで追加しました。
+  生成中はストリームの差分から推定した速度を`TOK/S`として表示し、`message_end`では
+  プロバイダーが返す`usage.output`と最初の差分からの経過時間で確定します。
 
 ## 確認結果
 

@@ -1,11 +1,11 @@
 # mypi
 
 自分の常用環境の安定性と管理のしやすさを優先した、TypeScript製のPi拡張セットです。
-[pi-lab](https://github.com/u7chan/pi-lab)で登録済みの6機能を移植しています。
+[pi-lab](https://github.com/u7chan/pi-lab)で登録済みの6機能を移植し、生成速度の表示を追加しています。
 公開Gitリポジトリで配布し、npmには公開しません。
 
 1つのPiパッケージとして配布し、拡張のエントリーポイントも1つ（`extensions/index.ts`）にまとめています。
-起動時には6機能を常に登録し、Extensions欄にはmypi由来の項目を1つだけ表示します。
+起動時には7機能を常に登録し、Extensions欄にはmypi由来の項目を1つだけ表示します。
 機能別のON/OFF設定や設定UIはありません。他の外部拡張の表示は変更しません。
 既存の`/minimal-footer`などの操作は残しています。
 
@@ -19,8 +19,9 @@
 | default-model | `/dm`（別名`/default-model`）と`set_default_model`ツールで起動時の既定モデル・thinkingを保存します |
 | git-status | origin（なければupstreamまたは最初のリモート）のリポジトリと、現在のブランチのPRをフッターにOSC 8リンクとして表示します |
 | elapsed | `before_agent_start`から`agent_settled`までの経過時間を`Working (12m 3s)`にリアルタイムで表示し、確定値を`ELAPSED 12m 3s`としてフッターに残します |
+| tok-rate | 最新のアシスタント応答の生成速度を`TOK/S 158`でフッターに表示します。生成中は到着した差分からの推定値で更新し、`message_end`でプロバイダーが返す`usage.output`から確定します |
 
-ステータスのキーは従来どおり`cache-savings` / `cache-ttl` / `elapsed` / `git`で、
+ステータスのキーは`cache-savings` / `cache-ttl` / `elapsed` / `git` / `tok`で、
 フッターにはキーの順に並べて表示します。OSC 8リンクは表示幅に含めず、切り詰める際にはリンクを閉じます。
 実際のTUIでは、列幅と書記素を扱うPiのユーティリティを使用します。
 
@@ -102,7 +103,7 @@ pi --no-extensions --no-session --verbose -e "$PWD"
 ### 構成
 
 ```text
-extensions/index.ts       # 唯一のエントリーポイント。6つの登録関数を呼ぶだけ
+extensions/index.ts       # 唯一のエントリーポイント。7つの登録関数を呼ぶだけ
 src/<機能>/extension.ts   # Piアダプター・登録処理・機能別の状態
 src/<機能>/core.ts        # 機能別のコア処理
 tests/<機能>.test.ts      # 移植したテストと回帰テスト
@@ -131,6 +132,9 @@ scripts/smoke-*.mjs        # 実際のPiでの隔離検証
   初回コミット前など、`git rev-parse HEAD`が失敗するチェックアウトではリンクを表示しません。
 - elapsedはworking行とフッターにだけ表示し、トランスクリプトには完了行を追加しません。
   中断時も所要時間を残し、他の拡張のworkingメッセージは完了時に既定の文言に戻します。
+- tok-rateの生成中表示は、ASCIIを0.25トークン、それ以外を1トークンとして差分から推定した概算です。
+  確定値はプロバイダーが返す`usage.output`を使い、返さない場合は推定値のままです。
+  失敗・中断した応答と、トークンが0の応答では表示しません。
 - UIのないprint/jsonモードでは表示を変更しません。RPCでは従来どおりstatus/dialogを利用しますが、
   カスタムフッターとworkingメッセージの端末表示はありません。
 - 設定の更新キューは、同じPiプロセス内で更新を直列化するものです。
