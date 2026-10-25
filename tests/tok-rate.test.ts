@@ -107,19 +107,38 @@ describe("tok-rate controller", () => {
 		expect(statuses).toHaveLength(3);
 	});
 
-	test("prefers provider-reported usage over the character estimate", () => {
+	test("uses provider-reported usage when it is ahead of the estimate", () => {
 		const clock = createClock();
 		const { ctx, statuses } = createFakeUi();
 		const controller = createTokRateController({ now: clock.now });
 
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
+		controller.messageUpdate(textDelta("a".repeat(40)), ctx);
 		clock.advance(1_000);
 		controller.messageUpdate(
-			{ type: "text_delta", delta: "b", partial: { role: "assistant", usage: { output: 60 } } },
+			{ type: "text_delta", delta: "hi", partial: { role: "assistant", usage: { output: 60 } } },
 			ctx,
 		);
 		expect(statuses.at(-1)?.[1]).toBe("60.0<dim> tok/s</dim>");
+	});
+
+	test("keeps estimating while a provider repeats a stale initial usage", () => {
+		const clock = createClock();
+		const { ctx, statuses } = createFakeUi();
+		const controller = createTokRateController({ now: clock.now });
+		// Anthropic streams `output_tokens: 1` from the start and only updates it
+		// when the message ends; trusting it would report 1 token per second.
+		const stale = { role: "assistant", usage: { output: 1 } };
+
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate({ type: "text_delta", delta: "a".repeat(200), partial: stale }, ctx);
+		clock.advance(1_000);
+		controller.messageUpdate({ type: "text_delta", delta: "b".repeat(200), partial: stale }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("100<dim> tok/s</dim>");
+
+		clock.advance(1_000);
+		controller.messageUpdate({ type: "text_delta", delta: "c".repeat(200), partial: stale }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("75.0<dim> tok/s</dim>");
 	});
 
 	test("freezes the confirmed rate over the generation span at message end", () => {

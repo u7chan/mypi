@@ -194,7 +194,11 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			if (lastShownAt !== undefined && at - lastShownAt < throttleMs) return;
 
 			lastShownAt = at;
-			show(reportedOutput ?? streamedTokens, spanMs, ctx);
+			// Some providers (Anthropic is one) report a fixed `output_tokens`
+			// from the first chunk and only replace it at the end.  A smaller
+			// reported value is that stale snapshot, not the current total, so
+			// keep the running estimate ahead of it until `message_end`.
+			show(Math.max(reportedOutput ?? 0, streamedTokens), spanMs, ctx);
 		},
 
 		messageEnd(message, ctx) {

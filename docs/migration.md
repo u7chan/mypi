@@ -50,11 +50,11 @@ elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agen
 - cache-ttl: カウントダウンを`ttl 4:31`にし、状態語を`cache auto` / `cache off` / `cache hit` /
   `cache expired`に整理しました。情報のない`pending` / `unknown`は表示しません。
 
-## 確認結果
+## 移行時点の確認結果
 
 環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.0.0です。
 
-- `bun test`: 移行時点で、移植した6機能のテスト、追加の回帰テスト、単一エントリーポイントのテストの計129件が成功しました。失敗は0件です。
+- `bun test`: 移植した6機能のテスト、追加の回帰テスト、単一エントリーポイントのテストの計129件が成功しました。失敗は0件です。
 - `node scripts/smoke-pi.mjs`: 実際のDefaultResourceLoaderでパッケージから1つのエントリーポイントをロードしました。
   コマンド3件、ツール1件、複数ハンドラーの共存を確認しました。
   ローカルのモックプロバイダーと実際のAgentSessionの再試行ループ（約4.4秒）で、最初の
@@ -64,7 +64,7 @@ elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agen
   ホストの列幅関数を使い、0〜160列の表示幅と、全角・絵文字・結合文字のセッション名を検証しました。
 - `scripts/smoke-tui.mjs`: 実際のCLIのregular / fullscreen対話TUIをPTYで起動しました。
   Extensions欄はmypiの1項目でした。ローカルHTTPモックでworkingメッセージが毎秒更新されること、
-  `elapsed … · … tok/s · ttl … · cached …`の表示、次の指示でelapsedが消えることを確認しました。
+  `SAVED … CACHE hit ELAPSED …`の表示、次の指示でelapsedが消えることを確認しました。
   regularでは`/minimal-footer`の切り替え、`/dm`の選択画面とキャンセル、既定モデルの変更、
   モデルによる`set_default_model`のツール呼び出しを確認しました。保存先は一時エージェントディレクトリです。
   fullscreenではgit/PRのフィクスチャによるOSC 8リンクと他のステータスの共存、長い全角のセッション名の
@@ -73,9 +73,23 @@ elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agen
 SDKではUI sinkを注入して検証し、対話TUIでは実際のCLIの描画を検証しました。
 これらはプロバイダーの本番サービスやGitHubのPRを使った検証ではありません。
 
+## フッター変更後の確認結果
+
+環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.4.0です。
+
+- `bun test`: 7機能と単一エントリーポイントの計134件が成功しました。失敗は0件です。
+- `node scripts/smoke-pi.mjs`: Pi 1.4.0のSDKで1エントリーポイント、7機能、再試行ループ、
+  `elapsed` / `tok/s` / `ttl` / `cached`のステータス、終了時の後処理を確認しました。
+- `scripts/smoke-tui.mjs`: regular TUIをPTYで起動し、
+  `elapsed 2s · 4.6 tok/s · cache hit · cached 1k tok · u7chan/mypi`の並びと区切りを実測しました。
+  `/minimal-footer`、`/dm`、`/quit`の動作と終了コード0も確認しました。
+- 金額推定の削除と`cache-savings`から`cache-reuse`へのキー変更はテストで確認しています。
+
+これらもローカルHTTPモックとフィクスチャによる検証で、実プロバイダーや実PRを使ったものではありません。
+
 ## 未確認事項・別途判断
 
-- 実際のプロバイダーのペイロード・料金に基づく推定の妥当性、実際のGitHub PRの取得、端末でのリンクのクリック。
+- 実際のプロバイダーのusageに基づくtok/sとTTLの妥当性、実際のGitHub PRの取得、端末でのリンクのクリック。
 - 常用環境の外部拡張との組み合わせ、実際のユーザー設定を使った切り替え。
 - 初回コミット・push後の`pi install git:github.com/u7chan/mypi@main`によるインストールと更新。
 
