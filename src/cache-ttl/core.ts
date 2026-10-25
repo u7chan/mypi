@@ -204,26 +204,37 @@ export function inspectPromptCacheTtl(payload: unknown): number | null | undefin
 	return undefined;
 }
 
-/** Format an absolute expiry or an explanatory non-countdown status. */
+/**
+ * Format an absolute expiry or an explanatory state.
+ *
+ * `ttl m:ss` is only shown for a real countdown.  States that carry no
+ * information (`pending` before the first request, `unknown` when the TTL
+ * cannot be read) return undefined so they do not take footer space.
+ */
 export function formatCacheStatus(
 	expiresAt: number | undefined,
 	now: number,
 	emptyStatus: CacheEmptyStatus = "unknown",
-): string {
+): string | undefined {
 	if (expiresAt === undefined) {
-		if (emptyStatus === "pending") return "CACHE pending";
-		if (emptyStatus === "automatic") return "CACHE auto";
-		if (emptyStatus === "unsupported") return "CACHE unsupported";
-		return "CACHE unknown";
+		if (emptyStatus === "automatic") return "cache auto";
+		if (emptyStatus === "unsupported") return "cache off";
+		return undefined;
 	}
 
 	const remainingMs = expiresAt - now;
-	if (remainingMs <= 0) return "CACHE expired";
+	if (remainingMs <= 0) return "cache expired";
+
+	// Long provider TTLs (1h, 24h) read better as hours than as `59:59`.
+	if (remainingMs >= MILLISECONDS_PER_HOUR) {
+		const totalMinutes = Math.floor(remainingMs / MILLISECONDS_PER_MINUTE);
+		return `ttl ${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`;
+	}
 
 	const totalSeconds = Math.ceil(remainingMs / MILLISECONDS_PER_SECOND);
 	const minutes = Math.floor(totalSeconds / 60);
 	const seconds = totalSeconds % 60;
-	return `CACHE ${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+	return `ttl ${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 /**
@@ -252,20 +263,22 @@ export interface CacheStatusContext {
 
 /** The small part of Pi's theme API needed by the status renderer. */
 export interface CacheStatusTheme {
-	fg(color: "accent" | "dim", text: string): string;
+	fg(color: "dim", text: string): string;
 }
 
 /**
- * Style a cache status like the Codex adapter's status segment: the label is
- * accent-coloured and its changing/detail text is dimmed.  Keeping this as a
- * separate adapter also leaves the parser and controller usable without a
- * TUI theme in tests, RPC clients, and other harnesses.
+ * Style a cache status like the other footer segments: a dim label and a
+ * value in the terminal's normal foreground.  The label is `ttl` for a
+ * countdown and `cache` for a state (`hit`, `auto`, `off`, `expired`).
+ * Keeping this as a separate adapter leaves the parser and controller usable
+ * without a TUI theme in tests, RPC clients, and other harnesses.
  */
 export function formatThemedCacheStatus(text: string, theme?: CacheStatusTheme): string {
-	if (!theme || !text.startsWith("CACHE ")) return text;
+	if (!theme) return text;
 
-	const label = "CACHE";
-	return `${theme.fg("accent", label)}${theme.fg("dim", text.slice(label.length))}`;
+	const separator = text.indexOf(" ");
+	if (separator < 0) return text;
+	return `${theme.fg("dim", text.slice(0, separator))}${text.slice(separator)}`;
 }
 
 export interface CacheTtlTimer {
@@ -314,7 +327,7 @@ export function createCacheTtlController(options: CacheTtlControllerOptions = {}
 	let timer: CacheTtlTimer | undefined;
 	let generation = 0;
 	let currentContext: CacheStatusContext | undefined;
-	let lastText: string | undefined;
+	let lastText: string | undefined | null = null;
 	let emptyStatus: CacheEmptyStatus = "unknown";
 	let cacheHit = false;
 
@@ -327,8 +340,8 @@ export function createCacheTtlController(options: CacheTtlControllerOptions = {}
 		if (!ctx?.hasUI) return;
 
 		const text =
-			cacheHit && expiresAt === undefined ? "CACHE hit" : formatCacheStatus(expiresAt, now(), emptyStatus);
-		const renderedText = formatThemedCacheStatus(text, ctx.ui.theme);
+			cacheHit && expiresAt === undefined ? "cache hit" : formatCacheStatus(expiresAt, now(), emptyStatus);
+		const renderedText = text === undefined ? undefined : formatThemedCacheStatus(text, ctx.ui.theme);
 		if (renderedText === lastText) return;
 		lastText = renderedText;
 		ctx.ui.setStatus(STATUS_KEY, renderedText);
@@ -380,7 +393,7 @@ export function createCacheTtlController(options: CacheTtlControllerOptions = {}
 		emptyStatus = nextEmptyStatus;
 		cacheHit = nextCacheHit;
 		currentContext = ctx;
-		if (forceRender) lastText = undefined;
+		if (forceRender) lastText = null;
 		render(ctx);
 	};
 
@@ -465,7 +478,7 @@ export function createCacheTtlController(options: CacheTtlControllerOptions = {}
 			emptyStatus = "unknown";
 			cacheHit = false;
 			currentContext = undefined;
-			lastText = undefined;
+			lastText = null;
 		},
 
 		getState() {

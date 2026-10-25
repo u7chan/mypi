@@ -36,7 +36,7 @@ export type {
 } from "./core.ts";
 
 /**
- * Shows the generation speed of the latest assistant message as `TOK/S 158`.
+ * Shows the generation speed of the latest assistant message as `4.6 tok/s`.
  *
  * The value updates a few times per second while deltas stream and is replaced
  * by the provider-reported `usage.output` rate at `message_end`.  A new

@@ -20,7 +20,7 @@ function link(text: string, url: string): string {
 function createFooterData(overrides: Partial<FooterRenderData> = {}): FooterRenderData {
 	return {
 		getGitBranch: () => "main",
-		getExtensionStatuses: () => new Map([["cache-ttl", "CACHE hit"]]),
+		getExtensionStatuses: () => new Map([["cache-ttl", "cache hit"]]),
 		getAvailableProviderCount: () => 2,
 		onBranchChange: () => () => {},
 		...overrides,
@@ -70,8 +70,8 @@ describe("buildFooterLines", () => {
 			footerData: createFooterData({
 				getExtensionStatuses: () =>
 					new Map([
-						["cache-ttl", "CACHE hit"],
-						["cache-savings", "SAVED 6.8k tok ~$0.0010"],
+						["cache-ttl", "cache hit"],
+						["cache-reuse", "cached 6.8k tok"],
 					]),
 			}),
 			model: { id: "glm-5.3-flash", provider: "zai", reasoning: true },
@@ -89,8 +89,8 @@ describe("buildFooterLines", () => {
 		expect(lines[1]).toContain("<dim>(zai) glm-5.3-flash • max</dim>");
 		expect(lines[1]).not.toMatch(/[↑↓]|R\d|CH|\$/);
 		expect(lines[1]).toMatch(/\S {2,}\S/); // left and right are padded apart
-		// Statuses sorted alphabetically by key.
-		expect(lines[2]).toBe("SAVED 6.8k tok ~$0.0010 CACHE hit");
+		// Statuses follow the reading order, not the map order.
+		expect(lines[2]).toBe("cache hit<dim> · </dim>cached 6.8k tok");
 	});
 
 	test("uses the fallback and dim colour when context usage is unknown", () => {
@@ -112,7 +112,7 @@ describe("buildFooterLines", () => {
 			truncateToWidth(text, width) { calls.push(text); expect(width).toBe(10); return "host-truncated"; },
 		});
 		expect(lines).toEqual(["host-truncated", "host-truncated", "host-truncated"]);
-		expect(calls).toContain("CACHE hit");
+		expect(calls).toContain("cache hit");
 	});
 
 	test("colours the context percentage like the built-in thresholds", () => {
@@ -166,17 +166,49 @@ describe("buildFooterLines", () => {
 		expect(lines).toHaveLength(2);
 	});
 
-	test("truncates long status lines while keeping colour sequences", () => {
-		const colored = "\x1b[38;2;138;190;183mSAVED\x1b[39m\x1b[38;2;102;102;102m 6.8k tok ~$0.0010\x1b[39m";
+	test("orders known segments, keeps unknown ones alphabetical, and puts git last", () => {
 		const lines = buildFooterLines({
 			theme,
-			footerData: createFooterData({ getExtensionStatuses: () => new Map([["cache-savings", colored]]) }),
+			footerData: createFooterData({
+				getExtensionStatuses: () =>
+					new Map([
+						["git", "example/repo PR #1"],
+						["zzz-extra", "zzz"],
+						["cache-reuse", "cached 1k tok"],
+						["tok", "4.6 tok/s"],
+						["cache-ttl", "ttl 4:31"],
+						["elapsed", "elapsed 2s"],
+						["aaa-extra", "aaa"],
+					]),
+			}),
 			cwd: "/tmp",
-			width: 24,
+			width: 200,
+		});
+
+		expect(lines[2]).toBe(
+			[
+				"elapsed 2s",
+				"4.6 tok/s",
+				"ttl 4:31",
+				"cached 1k tok",
+				"aaa",
+				"zzz",
+				"example/repo PR #1",
+			].join("<dim> · </dim>"),
+		);
+	});
+
+	test("truncates long status lines while keeping colour sequences", () => {
+		const colored = "\x1b[38;2;102;102;102mcached\x1b[39m 6.8k tok";
+		const lines = buildFooterLines({
+			theme,
+			footerData: createFooterData({ getExtensionStatuses: () => new Map([["cache-reuse", colored]]) }),
+			cwd: "/tmp",
+			width: 20,
 		});
 		const visible = (text: string) => text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").length;
-		expect(visible(lines[2]!)).toBeLessThanOrEqual(24);
-		expect(lines[2]).toContain("SAVED");
+		expect(visible(lines[2]!)).toBeLessThanOrEqual(20);
+		expect(lines[2]).toContain("cached");
 	});
 
 	test("does not count OSC 8 hyperlinks toward the width", () => {

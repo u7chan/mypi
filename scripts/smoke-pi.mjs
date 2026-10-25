@@ -125,7 +125,7 @@ try {
 	await session.bindExtensions({ mode: "tui", uiContext, onError: (error) => errors.push(error) });
 	await sleep(100);
 	assert.match(statuses.get("git"), /example\/fixture.*PR #7/);
-	assert.equal(statuses.get("cache-ttl"), "CACHE pending");
+	assert.equal(statuses.has("cache-ttl"), false);
 	assert.equal(branchSubscriptions, 1);
 
 	// Pi's real retry loop must keep elapsed live past the first agent_end.
@@ -141,11 +141,11 @@ try {
 	assert(timeline.some((event) => event.type === "auto_retry_start"));
 	assert.equal(timeline.find((event) => event.type === "agent_end").elapsed, undefined);
 	assert(working.includes("Working (1s)"));
-	assert.equal(statuses.get("elapsed"), `ELAPSED ${Math.floor(duration / 1000)}s`);
-	assert.match(statuses.get("cache-ttl"), /^CACHE 00:/);
-	assert.match(statuses.get("cache-savings"), /^SAVED 1k tok ~\$/);
-	assert.match(statuses.get("tok"), /^TOK\/S 0\.\d$/);
-	assert.match(component.render(160)[2], /SAVED .*CACHE .*ELAPSED .*example\/fixture.*PR #7/);
+	assert.equal(statuses.get("elapsed"), `elapsed ${Math.floor(duration / 1000)}s`);
+	assert.match(statuses.get("cache-ttl"), /^ttl \d:\d\d$/);
+	assert.match(statuses.get("cache-reuse"), /^cached 1k tok$/);
+	assert.match(statuses.get("tok"), /^\d+(?:\.\d)? tok\/s$/);
+	assert.match(component.render(160)[2], /^elapsed .* · \d.* tok\/s · ttl .* · cached 1k tok · .*example\/fixture.*PR #7/);
 	// OSC 8 link widths and closing are checked with the host's actual parser.
 	session.setSessionName("確認👩‍💻é".repeat(50));
 	for (const width of [0, 1, 2, 20, 40, 80, 160]) {
@@ -160,8 +160,8 @@ try {
 		theme: "dark", packages: ["keep-this"], defaultProvider: "mypi-smoke",
 		defaultModel: "other-model", defaultThinkingLevel: "high",
 	});
-	assert.equal(statuses.get("cache-ttl"), "CACHE pending");
-	assert.equal(statuses.has("cache-savings"), false);
+	assert.equal(statuses.has("cache-ttl"), false);
+	assert.equal(statuses.has("cache-reuse"), false);
 	const ctx = session.extensionRunner.createToolContext("fixture-tool");
 	const result = await extension.tools.get("set_default_model").definition.execute(
 		"fixture-tool", { provider: "mypi-smoke", model: "fixture-model" }, undefined, undefined, ctx,

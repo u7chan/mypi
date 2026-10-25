@@ -36,7 +36,7 @@ export type {
  * instruction, including automatic retries and every tool call).  While it
  * runs the working line ticks every second (`Working (12m 3s)`); when it has
  * fully settled the final duration stays in the footer status
- * (`ELAPSED 12m 3s`) until the next instruction.
+ * (`elapsed 12m 3s`) until the next instruction.
  */
 export default function elapsedExtension(pi: ExtensionAPI): void {
 	const controller = createElapsedController();

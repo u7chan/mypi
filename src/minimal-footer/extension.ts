@@ -2,13 +2,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	buildFooterLines,
 	formatFooterTokens,
+	STATUS_ORDER,
 	type FooterRenderData,
 	type FooterTextMetrics,
 	type MinimalFooterContext,
 	type MinimalFooterTheme,
 } from "./core.ts";
 
-export { buildFooterLines, formatFooterTokens };
+export { buildFooterLines, formatFooterTokens, STATUS_ORDER };
 export type { FooterRenderData, MinimalFooterContext, MinimalFooterTheme };
 
 /**
@@ -17,7 +18,7 @@ export type { FooterRenderData, MinimalFooterContext, MinimalFooterTheme };
  * The built-in footer always renders the token/cost stats block
  * (`↑input ↓output R… W… CH% $cost`).  This extension keeps the context
  * window usage, model info, and extension statuses (including the
- * cache-savings and cache-ttl segments), and drops the rest.
+ * cache-reuse and cache-ttl segments), and drops the rest.
  *
  * Enabled by default in TUI sessions.  `/minimal-footer` toggles back to the
  * built-in footer and re-enables it.  Non-TUI modes are untouched.

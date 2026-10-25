@@ -53,12 +53,12 @@ export function formatTokPerSecond(tokensPerSecond: number): string {
 }
 
 export interface TokRateTheme {
-	fg(color: "accent" | "dim", text: string): string;
+	fg(color: "dim", text: string): string;
 }
 
-/** The footer status: accent label, dim value, like the other segments. */
+/** The footer status: the rate in normal text, its unit dimmed. */
 export function formatThemedTokRateStatus(tokensPerSecond: number, theme: TokRateTheme): string {
-	return `${theme.fg("accent", "TOK/S")}${theme.fg("dim", ` ${formatTokPerSecond(tokensPerSecond)}`)}`;
+	return `${formatTokPerSecond(tokensPerSecond)}${theme.fg("dim", " tok/s")}`;
 }
 
 export interface TokRateUi {

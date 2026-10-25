@@ -3,7 +3,7 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Personal production Pi extension set: cache TTL/savings, minimal footer, default model, git/PR links, elapsed time, and token rate.",
+  "description": "Personal production Pi extension set: cache TTL/reuse, minimal footer, default model, git/PR links, elapsed time, and token rate.",
   "repository": {
     "type": "git",
     "url": "https://github.com/u7chan/mypi.git"

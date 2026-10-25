@@ -71,7 +71,7 @@ describe("formatTokPerSecond", () => {
 	});
 
 	test("renders the themed footer status", () => {
-		expect(formatThemedTokRateStatus(158.4, theme)).toBe("<accent>TOK/S</accent><dim> 158</dim>");
+		expect(formatThemedTokRateStatus(158.4, theme)).toBe("158<dim> tok/s</dim>");
 	});
 });
 
@@ -95,7 +95,7 @@ describe("tok-rate controller", () => {
 
 		clock.advance(1);
 		controller.messageUpdate(textDelta("c"), ctx);
-		expect(statuses.at(-1)?.[1]).toBe("<accent>TOK/S</accent><dim> 251</dim>");
+		expect(statuses.at(-1)?.[1]).toBe("251<dim> tok/s</dim>");
 
 		// Inside the throttle window nothing repaints.
 		clock.advance(DEFAULT_THROTTLE_MS - 1);
@@ -119,7 +119,7 @@ describe("tok-rate controller", () => {
 			{ type: "text_delta", delta: "b", partial: { role: "assistant", usage: { output: 60 } } },
 			ctx,
 		);
-		expect(statuses.at(-1)?.[1]).toBe("<accent>TOK/S</accent><dim> 60.0</dim>");
+		expect(statuses.at(-1)?.[1]).toBe("60.0<dim> tok/s</dim>");
 	});
 
 	test("freezes the confirmed rate over the generation span at message end", () => {
@@ -133,7 +133,7 @@ describe("tok-rate controller", () => {
 		clock.advance(2_500);
 		controller.messageEnd({ role: "assistant", usage: { output: 300 }, stopReason: "stop" }, ctx);
 
-		expect(statuses.at(-1)?.[1]).toBe("<accent>TOK/S</accent><dim> 120</dim>");
+		expect(statuses.at(-1)?.[1]).toBe("120<dim> tok/s</dim>");
 	});
 
 	test("falls back to the full span when the provider sends one burst", () => {
@@ -147,7 +147,7 @@ describe("tok-rate controller", () => {
 		clock.advance(10);
 		controller.messageEnd({ role: "assistant", usage: { output: 10 }, stopReason: "stop" }, ctx);
 
-		expect(statuses.at(-1)?.[1]).toBe("<accent>TOK/S</accent><dim> 5.0</dim>");
+		expect(statuses.at(-1)?.[1]).toBe("5.0<dim> tok/s</dim>");
 	});
 
 	test("drops the value for failed, aborted, or empty responses", () => {
@@ -180,7 +180,7 @@ describe("tok-rate controller", () => {
 		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
 		clock.advance(1_000);
 		controller.messageUpdate(textDelta("b"), ctx);
-		expect(statuses.at(-1)?.[1]).toContain("TOK/S");
+		expect(statuses.at(-1)?.[1]).toContain("tok/s");
 
 		controller.reset(ctx);
 		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
