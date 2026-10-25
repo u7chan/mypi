@@ -151,7 +151,9 @@ describe("tok-rate controller", () => {
 		controller.messageStart({ role: "assistant" }, ctx);
 		clock.advance(500);
 		controller.messageUpdate(textDelta("hello"), ctx);
-		clock.advance(2_500);
+		clock.advance(500);
+		controller.messageUpdate(textDelta("world"), ctx);
+		clock.advance(2_000);
 		controller.messageEnd({ role: "assistant", usage: { output: 300 }, stopReason: "stop" }, ctx);
 
 		expect(statuses.at(-1)?.[1]).toBe("120<dim> tok/s</dim>");
@@ -169,6 +171,25 @@ describe("tok-rate controller", () => {
 		controller.messageEnd({ role: "assistant", usage: { output: 10 }, stopReason: "stop" }, ctx);
 
 		expect(statuses.at(-1)?.[1]).toBe("5.0<dim> tok/s</dim>");
+	});
+
+	test("uses the whole message for a single delta even when it ends later", () => {
+		const clock = createClock();
+		const { ctx, statuses } = createFakeUi();
+		const controller = createTokRateController({ now: clock.now });
+
+		// One chunk after 3s of TTFT, then the message ends 500ms later.  A
+		// single delta has no measurable generation span, so both the message
+		// rate and the average use start→end (3500ms), not 500ms.
+		controller.messageStart({ role: "assistant" }, ctx);
+		clock.advance(3_000);
+		controller.messageUpdate(textDelta("a".repeat(200)), ctx);
+		clock.advance(500);
+		controller.messageEnd({ role: "assistant", usage: { output: 80 }, stopReason: "stop" }, ctx);
+
+		expect(statuses.at(-1)?.[1]).toBe("22.9<dim> tok/s</dim>");
+		controller.agentSettled(ctx);
+		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 22.9<dim> tok/s</dim>");
 	});
 
 	test("drops the value for failed, aborted, or empty responses", () => {

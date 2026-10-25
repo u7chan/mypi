@@ -28,14 +28,6 @@ export const DEFAULT_THROTTLE_MS = 250;
 export const DEFAULT_MIN_SPAN_MS = 400;
 
 /**
- * A provider that delivers the whole message in one chunk (zero or one delta)
- * has no measurable generation span.  Fall back to the full start→end time
- * below this.  A short response with several deltas keeps its real span for
- * both the message rate and the instruction average.
- */
-export const DEFAULT_FALLBACK_SPAN_MS = 100;
-
-/**
  * Rough output-token estimate for a streamed delta.
  *
  * ASCII text averages about four characters per token; CJK and emoji are
@@ -102,7 +94,6 @@ export interface TokRateControllerOptions {
 	now?: () => number;
 	throttleMs?: number;
 	minSpanMs?: number;
-	fallbackSpanMs?: number;
 }
 
 export interface TokRateController {
@@ -145,7 +136,6 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 	const now = options.now ?? (() => Date.now());
 	const throttleMs = options.throttleMs ?? DEFAULT_THROTTLE_MS;
 	const minSpanMs = options.minSpanMs ?? DEFAULT_MIN_SPAN_MS;
-	const fallbackSpanMs = options.fallbackSpanMs ?? DEFAULT_FALLBACK_SPAN_MS;
 
 	let active = false;
 	let startedAt = 0;
@@ -241,13 +231,11 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			const tokens = confirmedTokens ?? reportedOutput ?? streamedTokens;
 			const generationSpan = firstDeltaAt !== undefined ? finishedAt - firstDeltaAt : undefined;
 			const totalSpan = finishedAt - startedAt;
-			// A one-chunk response has no useful generation span, so it falls back
-			// to the whole message (TTFT included).  Several deltas are measurable
-			// even below `fallbackSpanMs` and must not absorb TTFT.
-			const spanMs =
-				generationSpan !== undefined && (deltaCount > 1 || generationSpan >= fallbackSpanMs)
-					? generationSpan
-					: totalSpan;
+			// Zero or one delta means the provider sent the message in one chunk;
+			// there is no measurable generation span, so use the whole message
+			// (TTFT included).  Several deltas are measurable and must not absorb
+			// TTFT, however short the generation was.
+			const spanMs = deltaCount > 1 && generationSpan !== undefined ? generationSpan : totalSpan;
 
 			active = false;
 			firstDeltaAt = undefined;

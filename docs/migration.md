@@ -77,7 +77,7 @@ SDKではUI sinkを注入して検証し、対話TUIでは実際のCLIの描画�
 
 環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.4.0です。
 
-- `bun test`: 7機能と単一エントリーポイントの計140件が成功しました。失敗は0件です。
+- `bun test`: 7機能と単一エントリーポイントの計141件が成功しました。失敗は0件です。
 - `node scripts/smoke-pi.mjs`: Pi 1.4.0のSDKで1エントリーポイント、7機能、再試行ループ、
   `elapsed` / `tok/s` / `ttl` / `cached`のステータス、終了時の後処理を確認しました。
 - `scripts/smoke-tui.mjs`: regular TUIをPTYで起動し、

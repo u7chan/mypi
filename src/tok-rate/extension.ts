@@ -1,7 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createTokRateController,
-	DEFAULT_FALLBACK_SPAN_MS,
 	DEFAULT_MIN_SPAN_MS,
 	DEFAULT_THROTTLE_MS,
 	estimateTokens,
@@ -17,7 +16,6 @@ import {
 // Re-export the pure pieces so they can be exercised without a Pi runtime.
 export {
 	createTokRateController,
-	DEFAULT_FALLBACK_SPAN_MS,
 	DEFAULT_MIN_SPAN_MS,
 	DEFAULT_THROTTLE_MS,
 	estimateTokens,
