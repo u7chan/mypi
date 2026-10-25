@@ -13,6 +13,9 @@ const theme: MinimalFooterTheme = {
 	},
 };
 
+/** Width-accurate theme for truncation tests. */
+const plainTheme: MinimalFooterTheme = { fg: (_color, text) => text };
+
 function link(text: string, url: string): string {
 	return `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`;
 }
@@ -82,15 +85,15 @@ describe("buildFooterLines", () => {
 			width: 120,
 		});
 
-		expect(lines).toHaveLength(3);
+		expect(lines).toHaveLength(2);
 		expect(lines[0]).toBe("<dim>~/workspace/mypi (main)</dim>");
 		// Context window stays, token/cost stats are gone.
-		expect(lines[1]).toContain("<dim>2.0%/256k</dim>");
-		expect(lines[1]).toContain("<dim>(zai) glm-5.3-flash • max</dim>");
+		expect(lines[1]).toContain("<dim>5.0k/256k (2.0%)</dim>");
+		expect(lines[1]).toContain("<dim>zai glm-5.3-flash max</dim>");
 		expect(lines[1]).not.toMatch(/[↑↓]|R\d|CH|\$/);
 		expect(lines[1]).toMatch(/\S {2,}\S/); // left and right are padded apart
-		// Statuses follow the reading order, not the map order.
-		expect(lines[2]).toBe("cache hit<dim> · </dim>cached 6.8k");
+		// Statuses follow the reading order and share the stats line.
+		expect(lines[1]).toContain("cache hit<dim> · </dim>cached 6.8k");
 	});
 
 	test("uses the fallback and dim colour when context usage is unknown", () => {
@@ -111,8 +114,8 @@ describe("buildFooterLines", () => {
 			visibleWidth(text) { calls.push(text); return 1; },
 			truncateToWidth(text, width) { calls.push(text); expect(width).toBe(10); return "host-truncated"; },
 		});
-		expect(lines).toEqual(["host-truncated", "host-truncated", "host-truncated"]);
-		expect(calls).toContain("cache hit");
+		expect(lines).toEqual(["host-truncated", "host-truncated"]);
+		expect(calls.some((call) => call.includes("cache hit"))).toBe(true);
 	});
 
 	test("colours the context percentage like the built-in thresholds", () => {
@@ -125,9 +128,9 @@ describe("buildFooterLines", () => {
 				width: 80,
 			})[1];
 
-		expect(render(91.0)).toContain("<error>91.0%/100</error>");
-		expect(render(75.0)).toContain("<warning>75.0%/100</warning>");
-		expect(render(70.0)).toContain("<dim>70.0%/100</dim>");
+		expect(render(91.0)).toContain("<error>1/100 (91.0%)</error>");
+		expect(render(75.0)).toContain("<warning>1/100 (75.0%)</warning>");
+		expect(render(70.0)).toContain("<dim>1/100 (70.0%)</dim>");
 	});
 
 	test("hides the provider prefix when only one provider is available", () => {
@@ -140,8 +143,7 @@ describe("buildFooterLines", () => {
 			width: 80,
 		});
 		expect(lines[1]).toContain("glm-5.3-flash");
-		expect(lines[1]).not.toContain("(zai)");
-		expect(lines[1]).not.toContain("•");
+		expect(lines[1]).not.toContain("zai");
 	});
 
 	test("appends the session name and omits a missing branch", () => {
@@ -156,7 +158,7 @@ describe("buildFooterLines", () => {
 		expect(lines[0]).toBe("<dim>~/lab • footer experiments</dim>");
 	});
 
-	test("appends no status line when there are no statuses", () => {
+	test("renders just the cwd and stats lines when there are no statuses", () => {
 		const lines = buildFooterLines({
 			theme,
 			footerData: createFooterData({ getExtensionStatuses: () => new Map() }),
@@ -185,7 +187,7 @@ describe("buildFooterLines", () => {
 			width: 200,
 		});
 
-		expect(lines[2]).toBe(
+		expect(lines[1]).toContain(
 			[
 				"elapsed 2s",
 				"4.6 tok/s",
@@ -201,34 +203,79 @@ describe("buildFooterLines", () => {
 	test("truncates long status lines while keeping colour sequences", () => {
 		const colored = "\x1b[38;2;102;102;102mcached\x1b[39m 6.8k tok";
 		const lines = buildFooterLines({
-			theme,
+			theme: plainTheme,
 			footerData: createFooterData({ getExtensionStatuses: () => new Map([["cache-reuse", colored]]) }),
 			cwd: "/tmp",
 			width: 20,
 		});
 		const visible = (text: string) => text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").length;
-		expect(visible(lines[2]!)).toBeLessThanOrEqual(20);
-		expect(lines[2]).toContain("cached");
+		expect(visible(lines[1]!)).toBeLessThanOrEqual(20);
+		expect(lines[1]).toContain("cached");
 	});
 
 	test("does not count OSC 8 hyperlinks toward the width", () => {
 		const repo = `\x1b[38;2;102;102;102m${link("u7chan/pi-lab", "https://github.com/u7chan/pi-lab")}\x1b[39m`;
 		const pr = `\x1b[38;2;138;190;183m${link("PR #12", "https://github.com/u7chan/pi-lab/pull/12")}\x1b[39m`;
 		const lines = buildFooterLines({
-			theme,
+			theme: plainTheme,
 			footerData: createFooterData({ getExtensionStatuses: () => new Map([["git", `${repo} ${pr}`]]) }),
 			cwd: "/tmp",
 			width: 60,
 		});
 		// The 39-character PR URL must not consume footer budget, and the 20
 		// visible columns fit.
-		expect(lines[2]).toContain("PR #12");
-		expect(lines[2]).not.toContain("...");
+		expect(lines[1]).toContain("PR #12");
+		expect(lines[1]).not.toContain("...");
+	});
+
+	test("drops the provider prefix before truncating statuses", () => {
+		const lines = buildFooterLines({
+			theme: plainTheme,
+			footerData: createFooterData({
+				getExtensionStatuses: () =>
+					new Map([
+						["cache-ttl", "cache hit"],
+						["cache-reuse", "cached 6.8k"],
+					]),
+			}),
+			model: { id: "glm-5.3-flash", provider: "zai", reasoning: true },
+			thinkingLevel: "max",
+			cwd: "/tmp",
+			contextUsage: { tokens: 5_000, contextWindow: 256_000, percent: 2.0 },
+			width: 64,
+		});
+
+		expect(lines[1]).toContain("glm-5.3-flash max");
+		expect(lines[1]).not.toContain("zai");
+		expect(lines[1]).toContain("cache hit · cached 6.8k");
+		expect(lines[1]).toHaveLength(64);
+	});
+
+	test("keeps statuses and drops the model when no model variant fits", () => {
+		const lines = buildFooterLines({
+			theme: plainTheme,
+			footerData: createFooterData({
+				getExtensionStatuses: () =>
+					new Map([
+						["cache-ttl", "cache hit"],
+						["cache-reuse", "cached 6.8k"],
+					]),
+			}),
+			model: { id: "glm-5.3-flash", provider: "zai", reasoning: true },
+			thinkingLevel: "max",
+			cwd: "/tmp",
+			contextUsage: { tokens: 5_000, contextWindow: 256_000, percent: 2.0 },
+			width: 36,
+		});
+
+		expect(lines[1]).not.toContain("glm-5.3-flash");
+		expect(lines[1]).toContain("5.0k/256k (2.0%) · cache hit");
+		expect(lines[1].length).toBeLessThanOrEqual(36);
 	});
 
 	test("closes a hyperlink that truncation cut in half", () => {
 		const lines = buildFooterLines({
-			theme,
+			theme: plainTheme,
 			footerData: createFooterData({
 				getExtensionStatuses: () =>
 					new Map([["git", link("a-very-long-link-label", "https://example.com/very/long/path")]]),
@@ -236,9 +283,9 @@ describe("buildFooterLines", () => {
 			cwd: "/tmp",
 			width: 20,
 		});
-		const line = lines[2]!;
+		const line = lines[1]!;
 		expect(line.match(/\x1b\]8;;[^\x1b\x07]+/g)).toHaveLength(1);
-		expect(line).toMatch(/\x1b\]8;;\x1b\\<dim>\.\.\.<\/dim>$/);
+		expect(line).toMatch(/\x1b\]8;;\x1b\\\.\.\.$/);
 	});
 });
 
@@ -292,7 +339,7 @@ describe("extension adapter", () => {
 		);
 		const lines = component.render(120);
 		expect(lines[0]).toContain("(main)");
-		expect(lines[1]).toContain("2.0%/256k");
+		expect(lines[1]).toContain("5.0k/256k (2.0%)");
 		expect(component.dispose).toBeTypeOf("function");
 		void renders;
 	});
