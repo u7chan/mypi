@@ -5,6 +5,7 @@ import {
 	DEFAULT_MIN_SPAN_MS,
 	DEFAULT_THROTTLE_MS,
 	estimateTokens,
+	formatThemedAverageTokRateStatus,
 	formatThemedTokRateStatus,
 	formatTokPerSecond,
 	STATUS_KEY,
@@ -20,6 +21,7 @@ export {
 	DEFAULT_MIN_SPAN_MS,
 	DEFAULT_THROTTLE_MS,
 	estimateTokens,
+	formatThemedAverageTokRateStatus,
 	formatThemedTokRateStatus,
 	formatTokPerSecond,
 	STATUS_KEY,
@@ -39,9 +41,10 @@ export type {
  * Shows the generation speed of the latest assistant message as `4.6 tok/s`.
  *
  * The value updates a few times per second while deltas stream and is replaced
- * by the provider-reported `usage.output` rate at `message_end`.  A new
- * instruction clears it, and failed or aborted messages do not leave a stale
- * number behind.
+ * by the provider-reported `usage.output` rate at `message_end`.  When the
+ * instruction settles, the footer switches to `avg 92 tok/s`: the successful
+ * messages' combined output over their combined generation time.  A new
+ * instruction clears it, and failed or aborted messages are excluded.
  */
 export default function tokRateExtension(pi: ExtensionAPI): void {
 	const controller = createTokRateController();
@@ -68,6 +71,10 @@ export default function tokRateExtension(pi: ExtensionAPI): void {
 
 	pi.on("message_end", (event, ctx) => {
 		controller.messageEnd(event.message as AssistantMessageLike, toContext(ctx));
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		controller.agentSettled(toContext(ctx));
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

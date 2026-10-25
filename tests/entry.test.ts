@@ -85,7 +85,7 @@ test("manifest exposes one entry, which registers exactly the seven feature sign
 	expect([...h.tools.keys()]).toEqual(["set_default_model"]);
 	expect(Object.fromEntries([...h.handlers].map(([event, list]) => [event, list.length]))).toEqual({
 		session_start: 4, message_start: 1, message_end: 3, model_select: 2, session_shutdown: 5,
-		before_provider_request: 1, tool_execution_end: 1, agent_settled: 2, before_agent_start: 2,
+		before_provider_request: 1, tool_execution_end: 1, agent_settled: 3, before_agent_start: 2,
 		message_update: 1,
 	});
 	expect(h.handlers.has("agent_end")).toBe(false);

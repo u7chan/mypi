@@ -5,7 +5,9 @@
  * speed.  This feature tracks one assistant message at a time: while deltas
  * stream it shows the rate of the output produced so far, and at
  * `message_end` it replaces that with the provider-reported `usage.output`
- * over the same span.
+ * over the same span.  Once the instruction settles it switches to
+ * `avg N tok/s`: successful messages' combined output divided by their
+ * combined generation time, so tool waits and other idle time are excluded.
  *
  * Live numbers are estimates.  Most providers report usage only on the final
  * chunk, so the running rate divides a character-based token estimate by the
@@ -61,6 +63,11 @@ export function formatThemedTokRateStatus(tokensPerSecond: number, theme: TokRat
 	return `${formatTokPerSecond(tokensPerSecond)}${theme.fg("dim", " tok/s")}`;
 }
 
+/** The settled average: `avg 92 tok/s` with the label and unit dimmed. */
+export function formatThemedAverageTokRateStatus(tokensPerSecond: number, theme: TokRateTheme): string {
+	return `${theme.fg("dim", "avg")} ${formatTokPerSecond(tokensPerSecond)}${theme.fg("dim", " tok/s")}`;
+}
+
 export interface TokRateUi {
 	theme: TokRateTheme;
 	setStatus(key: string, text: string | undefined): void;
@@ -105,6 +112,8 @@ export interface TokRateController {
 	messageUpdate(event: AssistantDeltaLike, ctx: TokRateContext): void;
 	/** Freeze the confirmed value for a finished assistant message. */
 	messageEnd(message: AssistantMessageLike, ctx: TokRateContext): void;
+	/** Replace the last message's rate with the instruction average. */
+	agentSettled(ctx: TokRateContext): void;
 	/** Drop the value when the session goes away. */
 	sessionShutdown(ctx: TokRateContext): void;
 }
@@ -143,6 +152,12 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 	let reportedOutput: number | undefined;
 	let lastShownAt: number | undefined;
 
+	// Per-instruction totals for the settled average.  Only successful messages
+	// with a measurable span are counted.
+	let runOutputTokens = 0;
+	let runGenerationMs = 0;
+	let runMessages = 0;
+
 	const clear = (ctx: TokRateContext) => {
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 	};
@@ -164,6 +179,14 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 	return {
 		reset(ctx) {
 			active = false;
+			startedAt = 0;
+			firstDeltaAt = undefined;
+			streamedTokens = 0;
+			reportedOutput = undefined;
+			lastShownAt = undefined;
+			runOutputTokens = 0;
+			runGenerationMs = 0;
+			runMessages = 0;
 			clear(ctx);
 		},
 
@@ -217,15 +240,43 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 
 			// A failed or aborted message has no meaningful rate; leaving the
 			// previous one on screen would describe the wrong response.
-			if (message.stopReason === "error" || message.stopReason === "aborted" || tokens <= 0) {
+			if (message.stopReason === "error" || message.stopReason === "aborted" || tokens <= 0 || spanMs <= 0) {
 				clear(ctx);
 				return;
 			}
+
+			runOutputTokens += tokens;
+			runGenerationMs += spanMs;
+			runMessages += 1;
 			show(tokens, spanMs, ctx);
+		},
+
+		agentSettled(ctx) {
+			if (!ctx.hasUI) return;
+
+			active = false;
+			firstDeltaAt = undefined;
+			lastShownAt = undefined;
+			if (runMessages === 0 || runGenerationMs <= 0) {
+				clear(ctx);
+				return;
+			}
+			ctx.ui.setStatus(
+				STATUS_KEY,
+				formatThemedAverageTokRateStatus((runOutputTokens * 1000) / runGenerationMs, ctx.ui.theme),
+			);
 		},
 
 		sessionShutdown(ctx) {
 			active = false;
+			startedAt = 0;
+			firstDeltaAt = undefined;
+			streamedTokens = 0;
+			reportedOutput = undefined;
+			lastShownAt = undefined;
+			runOutputTokens = 0;
+			runGenerationMs = 0;
+			runMessages = 0;
 			clear(ctx);
 		},
 	};

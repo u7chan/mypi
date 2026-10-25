@@ -4,6 +4,7 @@ import tokRateExtension, {
 	DEFAULT_MIN_SPAN_MS,
 	DEFAULT_THROTTLE_MS,
 	estimateTokens,
+	formatThemedAverageTokRateStatus,
 	formatThemedTokRateStatus,
 	formatTokPerSecond,
 	STATUS_KEY,
@@ -72,6 +73,7 @@ describe("formatTokPerSecond", () => {
 
 	test("renders the themed footer status", () => {
 		expect(formatThemedTokRateStatus(158.4, theme)).toBe("158<dim> tok/s</dim>");
+		expect(formatThemedAverageTokRateStatus(92.3, theme)).toBe("<dim>avg</dim> 92.3<dim> tok/s</dim>");
 	});
 });
 
@@ -190,6 +192,70 @@ describe("tok-rate controller", () => {
 		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
 	});
 
+	test("switches to the instruction average when the run settles", () => {
+		const clock = createClock();
+		const { ctx, statuses } = createFakeUi();
+		const controller = createTokRateController({ now: clock.now });
+
+		// Message 1: 100 tokens over 1s.
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
+		clock.advance(1_000);
+		controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason: "stop" }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("100<dim> tok/s</dim>");
+
+		// Message 2: 50 tokens over 1.5s (33.3 tok/s for this message).
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("b".repeat(200)), ctx);
+		clock.advance(1_500);
+		controller.messageEnd({ role: "assistant", usage: { output: 50 }, stopReason: "stop" }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("33.3<dim> tok/s</dim>");
+
+		// (100 + 50) tokens / (1s + 1.5s) = 60 tok/s.
+		controller.agentSettled(ctx);
+		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 60.0<dim> tok/s</dim>");
+	});
+
+	test("uses the message rate as the average for a single-message run", () => {
+		const clock = createClock();
+		const { ctx, statuses } = createFakeUi();
+		const controller = createTokRateController({ now: clock.now });
+
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
+		clock.advance(1_000);
+		controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason: "stop" }, ctx);
+		controller.agentSettled(ctx);
+
+		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 100<dim> tok/s</dim>");
+	});
+
+	test("excludes failed messages and clears when nothing succeeded", () => {
+		const clock = createClock();
+		const { ctx, statuses } = createFakeUi();
+		const controller = createTokRateController({ now: clock.now });
+
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
+		clock.advance(1_000);
+		controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason: "stop" }, ctx);
+
+		// A failed retry after the success must not enter the average.
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("b".repeat(200)), ctx);
+		clock.advance(1_000);
+		controller.messageEnd({ role: "assistant", usage: { output: 500 }, stopReason: "error" }, ctx);
+		controller.agentSettled(ctx);
+		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 100<dim> tok/s</dim>");
+
+		// A new instruction with no successful message clears the old average.
+		controller.reset(ctx);
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageEnd({ role: "assistant", usage: { output: 0 }, stopReason: "stop" }, ctx);
+		controller.agentSettled(ctx);
+		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
+	});
+
 	test("resets on a new instruction and survives a user or tool-result message", () => {
 		const clock = createClock();
 		const { ctx, statuses } = createFakeUi();
@@ -246,6 +312,13 @@ describe("tok-rate controller", () => {
 			registerTool() {},
 		};
 		tokRateExtension(pi as never);
-		expect(events).toEqual(["before_agent_start", "message_start", "message_update", "message_end", "session_shutdown"]);
+		expect(events).toEqual([
+			"before_agent_start",
+			"message_start",
+			"message_update",
+			"message_end",
+			"agent_settled",
+			"session_shutdown",
+		]);
 	});
 });

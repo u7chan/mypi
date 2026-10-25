@@ -19,7 +19,7 @@
 | default-model | `/dm`（別名`/default-model`）と`set_default_model`ツールで起動時の既定モデル・thinkingを保存します |
 | git-status | origin（なければupstreamまたは最初のリモート）のリポジトリと、現在のブランチのPRをフッターにOSC 8リンクとして表示します |
 | elapsed | `before_agent_start`から`agent_settled`までの経過時間を`Working (12m 3s)`にリアルタイムで表示し、確定値を`elapsed 12m 3s`としてフッターに残します |
-| tok-rate | 最新のアシスタント応答の生成速度を`4.6 tok/s`でフッターに表示します。生成中は到着した差分からの推定値で更新し、`message_end`でプロバイダーが返す`usage.output`から確定します |
+| tok-rate | 生成中は最新の assistant 応答の速度を`4.6 tok/s`（差分からの推定）で表示し、指示が落ち着いたら成功メッセージの合計`usage.output`÷合計生成時間を`avg 92 tok/s`で表示します |
 
 ステータスは（minimal-footer有効時に）`elapsed` / `tok` / `cache-ttl` / `cache-reuse`の順に並べ、他の拡張のステータスはキー順でその後に、`git`は最後に置きます。
 区切りは` · `で、ラベルはdim、値は通常色にします。Pi標準フッターへ切り替えると、並びはキー順、区切りはスペースに戻ります（ラベルと色は同じです）。
@@ -135,8 +135,10 @@ scripts/smoke-*.mjs        # 実際のPiでの隔離検証
 - elapsedはworking行とフッターにだけ表示し、トランスクリプトには完了行を追加しません。
   中断時も所要時間を残し、他の拡張のworkingメッセージは完了時に既定の文言に戻します。
 - tok-rateの生成中表示は、ASCIIを0.25トークン、それ以外を1トークンとして差分から推定した概算です。
-  確定値はプロバイダーが返す`usage.output`を使い、返さない場合は推定値のままです。
-  失敗・中断した応答と、トークンが0の応答では表示しません。
+  `message_end`の確定値はプロバイダーが返す`usage.output`を使い、返さない場合は推定値のままです。
+- tok-rateの`avg`は、成功したassistantメッセージの合計`usage.output`÷合計生成時間（最初の差分→`message_end`）です。
+  ツールの実行・待機とTTFTは含みません。1チャンクで返る応答は開始→終了にフォールバックし、
+  失敗・中断した応答は集計から除外します。
 - UIのないprint/jsonモードでは表示を変更しません。RPCでは従来どおりstatus/dialogを利用しますが、
   カスタムフッターとworkingメッセージの端末表示はありません。
 - 設定の更新キューは、同じPiプロセス内で更新を直列化するものです。
