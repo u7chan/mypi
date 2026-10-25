@@ -93,6 +93,18 @@ function statusRank(key: string): number {
 	return key === "git" ? STATUS_ORDER.length + 1 : STATUS_ORDER.length;
 }
 
+/**
+ * Keys that stay on the stats line.  Everything else belongs to another
+ * extension, can appear and disappear with the model, and is the part that
+ * moves to a third line when the stats line runs out of width.
+ */
+const OWN_STATUS_KEYS: ReadonlySet<string> = new Set<string>([...STATUS_ORDER, "git"]);
+
+interface StatusEntry {
+	key: string;
+	text: string;
+}
+
 /** Separator between status segments; dim so the values stay dominant. */
 const STATUS_SEPARATOR = " · ";
 
@@ -192,25 +204,29 @@ function formatModelInfoVariants(input: FooterRenderInput): string[] {
 	return variants;
 }
 
+function joinStatusEntries(entries: readonly StatusEntry[], separator: string): string {
+	return entries.map((entry) => entry.text).join(separator);
+}
+
 /**
  * `used/window (percent) · statuses` on the left, model info right-aligned.
  *
  * When no model variant fits next to all statuses, the statuses keep the line
  * and the model is dropped: cache watching is the reason this footer exists.
  */
-function buildStatsLine(
+function renderStatsLine(
 	input: FooterRenderInput,
-	statuses: string[],
+	entries: readonly StatusEntry[],
 	width: number,
 	metrics: FooterTextMetrics,
 ): string {
 	const { theme } = input;
 	const left = formatContextUsage(input);
 	const separator = theme.fg("dim", STATUS_SEPARATOR);
-	const statusText = statuses.join(separator);
+	const statusText = joinStatusEntries(entries, separator);
 	const leftWidth = metrics.visibleWidth(left);
-	const statusWidth = statuses.length > 0 ? metrics.visibleWidth(separator) + metrics.visibleWidth(statusText) : 0;
-	const body = statuses.length > 0 ? left + separator + statusText : left;
+	const statusWidth = entries.length > 0 ? metrics.visibleWidth(separator) + metrics.visibleWidth(statusText) : 0;
+	const body = entries.length > 0 ? left + separator + statusText : left;
 	const bodyWidth = leftWidth + statusWidth;
 
 	for (const info of formatModelInfoVariants(input)) {
@@ -223,7 +239,7 @@ function buildStatsLine(
 	}
 
 	const statusRoom = Math.max(0, width - leftWidth - metrics.visibleWidth(separator));
-	if (statuses.length === 0 || statusRoom === 0) {
+	if (entries.length === 0 || statusRoom === 0) {
 		return metrics.truncateToWidth(left, width, "");
 	}
 	const truncated = metrics.truncateToWidth(statusText, statusRoom, theme.fg("dim", "..."));
@@ -231,10 +247,71 @@ function buildStatsLine(
 }
 
 /**
+ * Truncate with an ellipsis, then clip the result to the width.
+ *
+ * The offline fallback appends the three-column ellipsis even when it is wider
+ * than the space left (a one- or two-column terminal), so the second pass
+ * keeps every rendered line inside `width`.  Pi's host metrics already do
+ * this, which makes the second call a no-op there.
+ */
+function fitLine(text: string, width: number, metrics: FooterTextMetrics, ellipsis: string): string {
+	// Below the ellipsis width, show raw characters instead of a clipped marker.
+	const marker = metrics.visibleWidth(ellipsis) < width ? ellipsis : "";
+	return metrics.truncateToWidth(metrics.truncateToWidth(text, width, marker), width, "");
+}
+
+/**
+ * Lay the statuses out on the stats line, spilling other extensions' statuses
+ * to a third line when the whole row would be cut instead.
+ *
+ * This package's segments (`elapsed`, `tok`, `cache-ttl`, `cache-reuse`) and
+ * `git` stay on the stats line: the links are the reason it exists.  A Codex
+ * adapter plus its usage counters adds roughly 40 columns, which used to clip
+ * the tail of the row down to `u7...` and hide the PR number.  Moving the
+ * foreign segments keeps them intact on their own line and gives the freed
+ * width back to the model info.  The height changes only when the row crosses
+ * the terminal width; a third line that is still too wide is truncated like
+ * any other line, and a stats line that overflows without foreign statuses
+ * keeps the old truncation.
+ */
+function buildStatsLines(
+	input: FooterRenderInput,
+	entries: readonly StatusEntry[],
+	width: number,
+	metrics: FooterTextMetrics,
+): string[] {
+	const hasForeignStatus = entries.some((entry) => !OWN_STATUS_KEYS.has(entry.key));
+	if (hasForeignStatus) {
+		const separator = input.theme.fg("dim", STATUS_SEPARATOR);
+		const leftWidth = metrics.visibleWidth(formatContextUsage(input));
+		const bodyWidth =
+			leftWidth + metrics.visibleWidth(separator) + metrics.visibleWidth(joinStatusEntries(entries, separator));
+
+		if (bodyWidth > width) {
+			const own = entries.filter((entry) => OWN_STATUS_KEYS.has(entry.key));
+			const foreign = entries.filter((entry) => !OWN_STATUS_KEYS.has(entry.key));
+			const statsLine = renderStatsLine(input, own, width, metrics);
+			const foreignLine = fitLine(
+				joinStatusEntries(foreign, separator),
+				width,
+				metrics,
+				input.theme.fg("dim", "..."),
+			);
+			// A terminal too narrow for even the ellipsis leaves nothing to show.
+			return foreignLine ? [statsLine, foreignLine] : [statsLine];
+		}
+	}
+
+	return [renderStatsLine(input, entries, width, metrics)];
+}
+
+/**
  * The stats-free footer lines:
  * 1. `~/cwd (branch) • session`
  * 2. `used/window (percent) · statuses` … right-aligned model info (no token/cost
  *    stats), the statuses sorted by key like the built-in footer
+ * 3. only when other extensions' statuses would be cut on line 2: those
+ *    statuses, without the context and model parts
  */
 export function buildFooterLines(
 	input: FooterRenderInput,
@@ -246,11 +323,11 @@ export function buildFooterLines(
 	const branch = input.footerData.getGitBranch();
 	if (branch) pwd = `${pwd} (${branch})`;
 	if (input.sessionName) pwd = `${pwd} • ${input.sessionName}`;
-	const pwdLine = metrics.truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
+	const pwdLine = fitLine(theme.fg("dim", pwd), width, metrics, theme.fg("dim", "..."));
 
-	const statuses = Array.from(input.footerData.getExtensionStatuses().entries())
+	const entries = Array.from(input.footerData.getExtensionStatuses().entries())
 		.sort(([a], [b]) => statusRank(a) - statusRank(b) || a.localeCompare(b))
-		.map(([, text]) => sanitizeStatusText(text));
+		.map(([key, text]) => ({ key, text: sanitizeStatusText(text) }));
 
-	return [pwdLine, buildStatsLine(input, statuses, width, metrics)];
+	return [pwdLine, ...buildStatsLines(input, entries, width, metrics)];
 }

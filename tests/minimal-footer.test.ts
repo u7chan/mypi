@@ -200,6 +200,157 @@ describe("buildFooterLines", () => {
 		);
 	});
 
+	test("moves other extensions' statuses to a third line instead of cutting the PR link", () => {
+		const lines = buildFooterLines({
+			theme: plainTheme,
+			footerData: createFooterData({
+				getExtensionStatuses: () =>
+					new Map([
+						["elapsed", "elapsed 6m 1s"],
+						["tok", "avg 96.9 tok/s"],
+						["cache-ttl", "cache expired"],
+						["cache-reuse", "cached 163.3k"],
+						["codex", "Codex adapter V: low • weekly: 60% left"],
+						["git", "u7chan/monorepo PR #8310"],
+					]),
+			}),
+			model: { id: "gpt-6-astra", provider: "openai-codex", reasoning: true, contextWindow: 256_000 },
+			thinkingLevel: "low",
+			cwd: "/tmp",
+			contextUsage: { tokens: 166_000, contextWindow: 256_000, percent: 64.7 },
+			width: 132,
+		});
+
+		expect(lines).toHaveLength(3);
+		// The whole PR link survives and the freed width brings back the model info.
+		expect(lines[1]).toContain("u7chan/monorepo PR #8310");
+		expect(lines[1]).toContain("gpt-6-astra low");
+		expect(lines[1]).not.toContain("Codex adapter");
+		// The Codex status is one segment and keeps its own line intact.
+		expect(lines[2]).toBe("Codex adapter V: low • weekly: 60% left");
+	});
+
+	test("keeps two lines while every status fits next to the context usage", () => {
+		const lines = buildFooterLines({
+			theme: plainTheme,
+			footerData: createFooterData({
+				getExtensionStatuses: () =>
+					new Map([
+						["cache-ttl", "cache hit"],
+						["codex", "Codex adapter V: low • weekly: 60% left"],
+						["git", "u7chan/monorepo PR #8310"],
+					]),
+			}),
+			cwd: "/tmp",
+			contextUsage: { tokens: 1_000, contextWindow: 256_000, percent: 0.4 },
+			width: 200,
+		});
+
+		expect(lines).toHaveLength(2);
+		expect(lines[1]).toContain("cache hit · Codex adapter V: low • weekly: 60% left · u7chan/monorepo PR #8310");
+	});
+
+	test("truncates the third line when it alone is wider than the terminal", () => {
+		const lines = buildFooterLines({
+			theme: plainTheme,
+			footerData: createFooterData({
+				getExtensionStatuses: () =>
+					new Map([
+						["cache-ttl", "cache hit"],
+						["other", "a very long foreign status that never fits in thirty columns"],
+					]),
+			}),
+			cwd: "/tmp",
+			width: 30,
+		});
+
+		expect(lines).toHaveLength(3);
+		expect(lines[2]).toHaveLength(30);
+		expect(lines[2]).toEndWith("...");
+	});
+
+	test("keeps every line inside one- and two-column terminals", () => {
+		for (const width of [1, 2]) {
+			const lines = buildFooterLines({
+				theme: plainTheme,
+				footerData: createFooterData({
+					getGitBranch: () => null,
+					getExtensionStatuses: () => new Map([["other", "abcdef"]]),
+					getAvailableProviderCount: () => 1,
+				}),
+				cwd: "/home/u7dev/workspace/mypi",
+				home: "/home/u7dev",
+				width,
+			});
+
+			for (const line of lines) expect(line.length).toBeLessThanOrEqual(width);
+		}
+	});
+
+	test("treats an exact fit as two lines and spills on the next column", () => {
+		const render = (width: number) =>
+			buildFooterLines({
+				theme: plainTheme,
+				footerData: createFooterData({
+					getExtensionStatuses: () =>
+						new Map([
+							["cache-ttl", "cache hit"],
+							["codex", "abc"],
+						]),
+					getAvailableProviderCount: () => 1,
+				}),
+				model: { id: "some-model" },
+				cwd: "/tmp",
+				width,
+			});
+
+		// `?/0 · cache hit · abc` is 21 columns, so the model is what goes first.
+		const exact = render(21);
+		expect(exact).toHaveLength(2);
+		expect(exact[1]).toBe("?/0 · cache hit · abc");
+		expect(exact[1]).not.toContain("some-model");
+
+		const oneColumnLess = render(20);
+		expect(oneColumnLess).toHaveLength(3);
+		expect(oneColumnLess[1]).toBe("?/0 · cache hit");
+		expect(oneColumnLess[2]).toBe("abc");
+	});
+
+	test("joins several foreign statuses in key order on the third line", () => {
+		const lines = buildFooterLines({
+			theme: plainTheme,
+			footerData: createFooterData({
+				getExtensionStatuses: () =>
+					new Map([
+						["zzz-extra", "zzz"],
+						["cache-ttl", "cache hit"],
+						["aaa-extra", "aaa"],
+					]),
+			}),
+			cwd: "/tmp",
+			width: 20,
+		});
+
+		expect(lines).toHaveLength(3);
+		expect(lines[2]).toBe("aaa · zzz");
+	});
+
+	test("keeps the old truncation when only this package's statuses overflow", () => {
+		const lines = buildFooterLines({
+			theme: plainTheme,
+			footerData: createFooterData({
+				getExtensionStatuses: () => new Map([["tok", "avg 96.9 tok/s"]]),
+			}),
+			cwd: "/tmp",
+			contextUsage: { tokens: 166_000, contextWindow: 256_000, percent: 64.7 },
+			width: 30,
+		});
+
+		expect(lines).toHaveLength(2);
+		expect(lines[1]).toHaveLength(30);
+		expect(lines[1]).toEndWith("...");
+	});
+
 	test("truncates long status lines while keeping colour sequences", () => {
 		const colored = "\x1b[38;2;102;102;102mcached\x1b[39m 6.8k tok";
 		const lines = buildFooterLines({
