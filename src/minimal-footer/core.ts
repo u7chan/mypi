@@ -80,6 +80,22 @@ export interface MinimalFooterContext {
 	};
 }
 
+/**
+ * Reading order of the known segments: response timing and speed first, then
+ * cache lifetime and reuse, with links last.  Other extensions' statuses keep
+ * their alphabetical order and sit just before the links.
+ */
+export const STATUS_ORDER = ["elapsed", "tok", "cache-ttl", "cache-reuse"] as const;
+
+function statusRank(key: string): number {
+	const index = STATUS_ORDER.indexOf(key as (typeof STATUS_ORDER)[number]);
+	if (index >= 0) return index;
+	return key === "git" ? STATUS_ORDER.length + 1 : STATUS_ORDER.length;
+}
+
+/** Separator between status segments; dim so the values stay dominant. */
+const STATUS_SEPARATOR = " · ";
+
 /** Same compaction as the built-in footer's formatTokens. */
 export function formatFooterTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -208,10 +224,11 @@ export function buildFooterLines(
 
 	const lines = [pwdLine, metrics.truncateToWidth(statsLine, width, "")];
 	const statuses = Array.from(input.footerData.getExtensionStatuses().entries())
-		.sort(([a], [b]) => a.localeCompare(b))
+		.sort(([a], [b]) => statusRank(a) - statusRank(b) || a.localeCompare(b))
 		.map(([, text]) => sanitizeStatusText(text));
 	if (statuses.length > 0) {
-		lines.push(metrics.truncateToWidth(statuses.join(" "), width, theme.fg("dim", "...")));
+		const separator = theme.fg("dim", STATUS_SEPARATOR);
+		lines.push(metrics.truncateToWidth(statuses.join(separator), width, theme.fg("dim", "...")));
 	}
 	return lines;
 }

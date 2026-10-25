@@ -6,7 +6,7 @@
  * `before_agent_start` → `agent_settled` span: while the run is active the
  * working message ticks once per second (`Working (12m 3s)`), and when it has
  * fully settled the final duration stays in the footer status
- * (`ELAPSED 12m 3s`) until the next instruction starts.  Claude Code prints
+ * (`elapsed 12m 3s`) until the next instruction starts.  Claude Code prints
  * the same `12m 3s` shape.
  *
  * The span deliberately ends at `agent_settled`, not `agent_end`: automatic
@@ -43,12 +43,12 @@ export function formatWorkingMessage(elapsedMs: number): string {
 }
 
 export interface ElapsedTheme {
-	fg(color: "accent" | "dim", text: string): string;
+	fg(color: "dim", text: string): string;
 }
 
-/** The footer status left behind by a finished run (accent label, dim value). */
+/** The footer status left behind by a finished run (dim label, normal value). */
 export function formatThemedElapsedStatus(elapsedMs: number, theme: ElapsedTheme): string {
-	return `${theme.fg("accent", "ELAPSED")}${theme.fg("dim", ` ${formatElapsed(elapsedMs)}`)}`;
+	return `${theme.fg("dim", "elapsed")} ${formatElapsed(elapsedMs)}`;
 }
 
 export interface ElapsedTimer {

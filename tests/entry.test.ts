@@ -76,7 +76,7 @@ function createHarness(mode = "tui", hasUI = true) {
 	};
 }
 
-test("manifest exposes one entry, which registers exactly the six feature signatures", () => {
+test("manifest exposes one entry, which registers exactly the seven feature signatures", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	expect(manifest.pi.extensions).toEqual(["extensions/index.ts"]);
 	expect(manifest.dependencies).toBeUndefined();
@@ -84,8 +84,9 @@ test("manifest exposes one entry, which registers exactly the six feature signat
 	expect([...h.commands.keys()]).toEqual(["minimal-footer", "dm", "default-model"]);
 	expect([...h.tools.keys()]).toEqual(["set_default_model"]);
 	expect(Object.fromEntries([...h.handlers].map(([event, list]) => [event, list.length]))).toEqual({
-		session_start: 4, message_end: 2, model_select: 2, session_shutdown: 4,
-		before_provider_request: 1, tool_execution_end: 1, agent_settled: 2, before_agent_start: 1,
+		session_start: 4, message_start: 1, message_end: 3, model_select: 2, session_shutdown: 5,
+		before_provider_request: 1, tool_execution_end: 1, agent_settled: 3, before_agent_start: 2,
+		message_update: 1,
 	});
 	expect(h.handlers.has("agent_end")).toBe(false);
 });
@@ -95,7 +96,7 @@ test("shared events compose, statuses coexist in minimal footer, and shutdown st
 	try {
 		await h.emit("session_start");
 		await Bun.sleep(10); // async PR lookup
-		expect(h.statuses.get("cache-ttl")).toBe("CACHE pending");
+		expect(h.statuses.has("cache-ttl")).toBe(false);
 		expect(h.statuses.get("git")).toContain("PR #7");
 		expect(h.branchSubscriptions).toBe(1);
 		await h.emit("before_agent_start");
@@ -106,9 +107,10 @@ test("shared events compose, statuses coexist in minimal footer, and shutdown st
 		await Bun.sleep(1050);
 		expect(h.working.at(-1)).toMatch(/^Working \([1-9]\d*s\)$/);
 		await h.emit("agent_settled");
-		expect(h.statuses.get("elapsed")).toMatch(/^ELAPSED [1-9]\d*s$/);
+		expect(h.statuses.get("elapsed")).toMatch(/^elapsed [1-9]\d*s$/);
 		const lines = h.component.render(160);
-		expect(lines[2]).toMatch(/SAVED .*CACHE .*ELAPSED .*example\/fixture.*PR #7/);
+		expect(lines[2]).toMatch(/^elapsed .* · ttl .* · cached 1k · .*example\/fixture.*PR #7/);
+		expect(lines[2]).not.toMatch(/\$|SAVED|CACHE|ELAPSED/);
 		expect(lines[1]).not.toMatch(/[↑↓]|CH|\$/);
 		await h.commands.get("minimal-footer").handler("", h.ctx);
 		expect(h.component).toBeUndefined();
@@ -116,8 +118,8 @@ test("shared events compose, statuses coexist in minimal footer, and shutdown st
 		await h.commands.get("minimal-footer").handler("", h.ctx);
 		expect(h.component.render(160)[2]).toContain("PR #7");
 		await h.emit("model_select");
-		expect(h.statuses.get("cache-ttl")).toBe("CACHE pending");
-		expect(h.statuses.has("cache-savings")).toBe(false);
+		expect(h.statuses.has("cache-ttl")).toBe(false);
+		expect(h.statuses.has("cache-reuse")).toBe(false);
 		expect(h.statuses.has("git")).toBe(true);
 		await h.emit("before_agent_start");
 		expect(h.statuses.has("elapsed")).toBe(false);
@@ -144,10 +146,10 @@ test("separate entry instances do not share controller state or footer toggle st
 		await a.emit("session_start"); await b.emit("session_start");
 		await Bun.sleep(10);
 		await a.emit("message_end", { message: { role: "assistant", usage: { cacheRead: 1500 } } });
-		expect(a.statuses.get("cache-ttl")).toBe("CACHE hit");
-		expect(b.statuses.get("cache-ttl")).toBe("CACHE pending");
-		expect(a.statuses.has("cache-savings")).toBe(true);
-		expect(b.statuses.has("cache-savings")).toBe(false);
+		expect(a.statuses.get("cache-ttl")).toBe("cache hit");
+		expect(b.statuses.has("cache-ttl")).toBe(false);
+		expect(a.statuses.has("cache-reuse")).toBe(true);
+		expect(b.statuses.has("cache-reuse")).toBe(false);
 		await a.commands.get("minimal-footer").handler("", a.ctx);
 		expect(a.component).toBeUndefined();
 		expect(b.component).toBeDefined();
@@ -177,7 +179,7 @@ test("headless modes avoid UI/timers/git commands; RPC preserves statuses withou
 				expect(h.working).toEqual([]);
 				expect(h.execCalls).toEqual([]);
 			} else {
-				expect(h.statuses.has("cache-savings")).toBe(true);
+				expect(h.statuses.has("cache-reuse")).toBe(true);
 				expect(h.statuses.has("elapsed")).toBe(true);
 			}
 		} finally { await h.emit("session_shutdown"); }

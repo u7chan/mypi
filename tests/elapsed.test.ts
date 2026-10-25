@@ -97,7 +97,7 @@ describe("elapsed text", () => {
 	test("renders the live working message and the themed footer status", () => {
 		expect(formatWorkingMessage(723_000)).toBe("Working (12m 3s)");
 		expect(formatThemedElapsedStatus(723_000, theme)).toBe(
-			"<accent>ELAPSED</accent><dim> 12m 3s</dim>",
+			"<dim>elapsed</dim> 12m 3s",
 		);
 	});
 });
@@ -138,7 +138,7 @@ describe("elapsed controller", () => {
 		expect(ui.working.at(-1)).toBeUndefined();
 		expect(ui.statuses.at(-1)).toEqual([
 			STATUS_KEY,
-			"<accent>ELAPSED</accent><dim> 12m 3s</dim>",
+			"<dim>elapsed</dim> 12m 3s",
 		]);
 		expect(fake.activeCount).toBe(0);
 
@@ -169,7 +169,7 @@ describe("elapsed controller", () => {
 		controller.agentSettled(ui.ctx);
 		expect(ui.statuses.at(-1)).toEqual([
 			STATUS_KEY,
-			"<accent>ELAPSED</accent><dim> 4s</dim>",
+			"<dim>elapsed</dim> 4s",
 		]);
 	});
 
@@ -182,7 +182,7 @@ describe("elapsed controller", () => {
 		controller.beforeAgentStart(ui.ctx);
 		clock.advance(2_000);
 		controller.agentSettled(ui.ctx);
-		expect(ui.statuses.at(-1)?.[1]).toBe("<accent>ELAPSED</accent><dim> 2s</dim>");
+		expect(ui.statuses.at(-1)?.[1]).toBe("<dim>elapsed</dim> 2s");
 
 		controller.beforeAgentStart(ui.ctx);
 		expect(ui.statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
@@ -293,7 +293,7 @@ describe("elapsed extension", () => {
 		handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
 		expect(working.at(-1)).toBeUndefined();
 		expect(statuses.at(-1)?.[0]).toBe(STATUS_KEY);
-		expect(statuses.at(-1)?.[1]).toContain("ELAPSED");
+		expect(statuses.at(-1)?.[1]).toContain("elapsed");
 		// The freeze must not sit on agent_end: retries continue past it.
 		expect(handlers.has("agent_end")).toBe(false);
 

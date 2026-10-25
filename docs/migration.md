@@ -13,14 +13,16 @@ pi-labの元のコードと配布マニフェストは変更していません�
 | pi-lab | mypi |
 |---|---|
 | `u7chan-lab-cache-ttl` | `src/cache-ttl/`、`tests/cache-ttl.test.ts` |
-| `u7chan-lab-cache-savings` | `src/cache-savings/`、`tests/cache-savings.test.ts` |
+| `u7chan-lab-cache-savings` | `src/cache-reuse/`、`tests/cache-reuse.test.ts`（金額推定を削除） |
 | `u7chan-lab-minimal-footer` | `src/minimal-footer/`、`tests/minimal-footer.test.ts` |
 | `u7chan-lab-default-model` | `src/default-model/`、`tests/default-model.test.ts` |
 | `u7chan-lab-git-status` | `src/git-status/`、`tests/git-status.test.ts` |
 | `u7chan-lab-elapsed` | `src/elapsed/`、`tests/elapsed.test.ts` |
+| （新規） | `src/tok-rate/`、`tests/tok-rate.test.ts` |
 
 アダプターの相対importとテストの参照先を変更し、1つのエントリーポイントから各登録関数を1回ずつ呼びます。
-機能ごとのクロージャー・コントローラー、ステータスキー、コマンド・ツール、ライフサイクルは維持しました。
+機能ごとのクロージャー・コントローラー、コマンド・ツール、ライフサイクルは維持しました。
+ステータスキーは`cache-reuse`（旧`cache-savings`）だけ変更しています。
 elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agent_settled`です。
 
 ### 移植時の修正
@@ -35,7 +37,20 @@ elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agen
   OSC 8リンクを閉じる処理もホスト側で維持しました。
   コア単体のテストやホストなしのテストには、従来のASCII/ANSI/OSC用フォールバックを残しました。
 
-## 確認結果
+## mypiで追加した機能
+
+- tok-rate: Pi本体にもpi-labにも生成速度の表示がないため、mypiで追加しました。
+  生成中はストリームの差分から推定した速度を表示し、`message_end`では
+  プロバイダーが返す`usage.output`と最初の差分からの経過時間で確定します。
+- フッターのラベル体系: 大文字の`SAVED` / `CACHE` / `ELAPSED` / `TOK/S`をやめ、
+  小文字のラベル（dim）と値（通常色）に揃えました。` · `区切りで並べ、
+  `elapsed` / `tok` / `cache-ttl` / `cache-reuse`の順、`git`は最後です。
+- cache-reuse: サブスクリプション運用では金額の意味がないため、`usage.cost`とカタログ単価に
+  基づく節約額の推定を削除し、`cached 1.5k`のようにトークン数だけを表示します。
+- cache-ttl: カウントダウンを`ttl 4:31`にし、状態語を`cache auto` / `cache off` / `cache hit` /
+  `cache expired`に整理しました。情報のない`pending` / `unknown`は表示しません。
+
+## 移行時点の確認結果
 
 環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.0.0です。
 
@@ -58,9 +73,25 @@ elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agen
 SDKではUI sinkを注入して検証し、対話TUIでは実際のCLIの描画を検証しました。
 これらはプロバイダーの本番サービスやGitHubのPRを使った検証ではありません。
 
+## フッター変更後の確認結果
+
+環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.4.0です。
+
+- `bun test`: 7機能と単一エントリーポイントの計141件が成功しました。失敗は0件です。
+- `node scripts/smoke-pi.mjs`: Pi 1.4.0のSDKで1エントリーポイント、7機能、再試行ループ、
+  `elapsed` / `tok/s` / `ttl` / `cached`のステータス、終了時の後処理を確認しました。
+- `scripts/smoke-tui.mjs`: regular TUIをPTYで起動し、
+  `elapsed 2s · avg 4.6 tok/s · cache hit · cached 1k · u7chan/mypi PR #3`の並びと区切り、
+  停止後に`avg`へ切り替わることを実測しました。
+  `/minimal-footer`、`/dm`、`/quit`の動作と終了コード0も確認しました。
+- 金額推定の削除と`cache-savings`から`cache-reuse`へのキー変更はテストで確認しています。
+- `avg`は確定した`usage.output`だけを集計し、複数差分の短時間応答でもTTFTを含めないことを回帰テストで確認しています。
+
+これらもローカルHTTPモックとフィクスチャによる検証で、実プロバイダーや実PRを使ったものではありません。
+
 ## 未確認事項・別途判断
 
-- 実際のプロバイダーのペイロード・料金に基づく推定の妥当性、実際のGitHub PRの取得、端末でのリンクのクリック。
+- 実際のプロバイダーのusageに基づくtok/sとTTLの妥当性、実際のGitHub PRの取得、端末でのリンクのクリック。
 - 常用環境の外部拡張との組み合わせ、実際のユーザー設定を使った切り替え。
 - 初回コミット・push後の`pi install git:github.com/u7chan/mypi@main`によるインストールと更新。
 

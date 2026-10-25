@@ -68,31 +68,30 @@ describe("inspectPromptCacheTtl", () => {
 });
 
 describe("footer clock", () => {
-	test("styles the cache label and detail like the Codex adapter", () => {
+	test("styles only the label, leaving the value in normal text", () => {
 		const theme = {
 			fg(color: "accent" | "dim", text: string) {
 				return `<${color}>${text}</${color}>`;
 			},
 		};
 
-		expect(formatThemedCacheStatus("CACHE 04:48", theme)).toBe(
-			"<accent>CACHE</accent><dim> 04:48</dim>",
-		);
-		expect(formatThemedCacheStatus("CACHE hit", theme)).toBe(
-			"<accent>CACHE</accent><dim> hit</dim>",
-		);
-		expect(formatThemedCacheStatus("CACHE unknown")).toBe("CACHE unknown");
+		expect(formatThemedCacheStatus("ttl 4:48", theme)).toBe("<dim>ttl</dim> 4:48");
+		expect(formatThemedCacheStatus("cache hit", theme)).toBe("<dim>cache</dim> hit");
+		expect(formatThemedCacheStatus("cache off")).toBe("cache off");
 	});
 
 	test("formats an absolute expiry and schedules the next visible change", () => {
-		expect(formatCacheStatus(undefined, 0, "pending")).toBe("CACHE pending");
-		expect(formatCacheStatus(undefined, 0, "automatic")).toBe("CACHE auto");
-		expect(formatCacheStatus(undefined, 0, "unsupported")).toBe("CACHE unsupported");
-		expect(formatCacheStatus(undefined, 0)).toBe("CACHE unknown");
-		expect(formatCacheStatus(0, 0)).toBe("CACHE expired");
-		expect(formatCacheStatus(60_000, 0)).toBe("CACHE 01:00");
-		expect(formatCacheStatus(9_000, 0)).toBe("CACHE 00:09");
-		expect(formatCacheStatus(9_000, 8_001)).toBe("CACHE 00:01");
+		expect(formatCacheStatus(undefined, 0, "pending")).toBeUndefined();
+		expect(formatCacheStatus(undefined, 0, "automatic")).toBe("cache auto");
+		expect(formatCacheStatus(undefined, 0, "unsupported")).toBe("cache off");
+		expect(formatCacheStatus(undefined, 0)).toBeUndefined();
+		expect(formatCacheStatus(0, 0)).toBe("cache expired");
+		expect(formatCacheStatus(60_000, 0)).toBe("ttl 1:00");
+		expect(formatCacheStatus(9_000, 0)).toBe("ttl 0:09");
+		expect(formatCacheStatus(9_000, 8_001)).toBe("ttl 0:01");
+		expect(formatCacheStatus(3_600_000, 0)).toBe("ttl 1h 0m");
+		expect(formatCacheStatus(3_600_000 + 90_000, 0)).toBe("ttl 1h 1m");
+		expect(formatCacheStatus(86_400_000, 0)).toBe("ttl 24h 0m");
 		expect(nextCacheUpdateDelayMs(60_000, 0)).toBe(1_000);
 		expect(nextCacheUpdateDelayMs(60_000, 1)).toBe(999);
 		expect(nextCacheUpdateDelayMs(0, 0)).toBeUndefined();
@@ -167,11 +166,11 @@ test("controller handles lifecycle resets, stale timers, unref, and efficient re
 	const ctx = createContext(updates);
 
 	controller.sessionStart(ctx);
-	expect(updates).toEqual([[STATUS_KEY, "CACHE pending"]]);
+	expect(updates).toEqual([[STATUS_KEY, undefined]]);
 	expect(controller.getState()).toEqual({ kind: "pending" });
 
 	controller.beforeProviderRequest({ prompt_cache_retention: "1m" }, ctx);
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE 01:00"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "ttl 1:00"]);
 	expect(timers).toHaveLength(1);
 	expect(timers[0]?.unrefCount).toBe(1);
 	const firstTimer = timers[0]!;
@@ -184,9 +183,9 @@ test("controller handles lifecycle resets, stale timers, unref, and efficient re
 
 	now += 1_001;
 	firstTimer.run();
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE 01:00"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "ttl 1:00"]);
 	repeatedTimer.run();
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE 00:59"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "ttl 0:59"]);
 	expect(timers[2]?.unrefCount).toBe(1);
 
 	// A request without cache evidence clears the old countdown and identifies
@@ -194,26 +193,26 @@ test("controller handles lifecycle resets, stale timers, unref, and efficient re
 	// cancelled callback must not resurrect it if it was already queued.
 	const secondTimer = timers.at(-1)!;
 	controller.beforeProviderRequest({ model: "uncached-provider" }, ctx);
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE unsupported"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "cache off"]);
 	expect(controller.getState()).toEqual({ kind: "unsupported" });
 	expect(secondTimer.cancelled).toBe(true);
 	secondTimer.run();
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE unsupported"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "cache off"]);
 
 	// Cache metadata can be present without a portable TTL.  Keep that state
 	// separate from a provider that emitted no cache metadata at all.
 	controller.beforeProviderRequest({ prompt_cache_retention: "short" }, ctx);
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE unknown"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, undefined]);
 	expect(controller.getState()).toEqual({ kind: "unknown" });
 
 	controller.beforeProviderRequest({ prompt_cache_key: "session-1" }, ctx);
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE 05:00"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "ttl 5:00"]);
 	const activeTimer = timers.at(-1)!;
 	controller.modelSelect(ctx);
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE pending"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, undefined]);
 	expect(controller.getState()).toEqual({ kind: "pending" });
 	activeTimer.run();
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE pending"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, undefined]);
 
 	// DeepSeek and Z.AI use implicit caching: the request has no TTL, while
 	// the final assistant usage reports cacheRead tokens when a prefix hits.
@@ -226,28 +225,28 @@ test("controller handles lifecycle resets, stale timers, unref, and efficient re
 		automaticCtx,
 		"opencode-go",
 	);
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE auto"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "cache auto"]);
 	expect(controller.getState()).toEqual({ kind: "automatic" });
 
 	// A gateway model with no cache evidence stays unsupported.
 	controller.beforeProviderRequest({ model: "llama-4" }, automaticCtx, "opencode-go");
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE unsupported"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "cache off"]);
 
 	controller.beforeProviderRequest({ model: "deepseek-chat" }, automaticCtx, "deepseek");
 	// The provider name is supplied by the extension context in production;
 	// a no-metadata request therefore falls back to the automatic status.
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE auto"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "cache auto"]);
 	expect(controller.getState()).toEqual({ kind: "automatic" });
 	controller.messageEnd(
 		{ role: "assistant", provider: "opencode-go", model: "deepseek-v4.1-flash", usage: { cacheRead: 128 } },
 		automaticCtx,
 	);
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE hit"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "cache hit"]);
 	controller.messageEnd(
 		{ role: "assistant", provider: "opencode-go", model: "deepseek-v4.1-flash", usage: { cacheRead: 0 } },
 		automaticCtx,
 	);
-	expect(updates.at(-1)).toEqual([STATUS_KEY, "CACHE auto"]);
+	expect(updates.at(-1)).toEqual([STATUS_KEY, "cache auto"]);
 
 	controller.sessionShutdown(ctx);
 	expect(updates.at(-1)).toEqual([STATUS_KEY, undefined]);
@@ -275,8 +274,8 @@ test("controller sends themed statuses to the Pi footer", () => {
 	controller.beforeProviderRequest({ prompt_cache_retention: "1m" }, ctx);
 
 	expect(updates).toEqual([
-		[STATUS_KEY, "<accent>CACHE</accent><dim> pending</dim>"],
-		[STATUS_KEY, "<accent>CACHE</accent><dim> 01:00</dim>"],
+		[STATUS_KEY, undefined],
+		[STATUS_KEY, "<dim>ttl</dim> 1:00"],
 	]);
 });
 
