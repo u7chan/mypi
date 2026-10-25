@@ -109,7 +109,7 @@ test("shared events compose, statuses coexist in minimal footer, and shutdown st
 		await h.emit("agent_settled");
 		expect(h.statuses.get("elapsed")).toMatch(/^elapsed [1-9]\d*s$/);
 		const lines = h.component.render(160);
-		expect(lines[2]).toMatch(/^elapsed .* · ttl .* · cached 1k tok · .*example\/fixture.*PR #7/);
+		expect(lines[2]).toMatch(/^elapsed .* · ttl .* · cached 1k · .*example\/fixture.*PR #7/);
 		expect(lines[2]).not.toMatch(/\$|SAVED|CACHE|ELAPSED/);
 		expect(lines[1]).not.toMatch(/[↑↓]|CH|\$/);
 		await h.commands.get("minimal-footer").handler("", h.ctx);

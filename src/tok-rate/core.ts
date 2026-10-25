@@ -28,8 +28,10 @@ export const DEFAULT_THROTTLE_MS = 250;
 export const DEFAULT_MIN_SPAN_MS = 400;
 
 /**
- * A provider that delivers the whole message in one chunk has almost no
- * generation span.  Fall back to the full start→end time below this.
+ * A provider that delivers the whole message in one chunk (zero or one delta)
+ * has no measurable generation span.  Fall back to the full start→end time
+ * below this.  A short response with several deltas keeps its real span for
+ * both the message rate and the instruction average.
  */
 export const DEFAULT_FALLBACK_SPAN_MS = 100;
 
@@ -148,12 +150,13 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 	let active = false;
 	let startedAt = 0;
 	let firstDeltaAt: number | undefined;
+	let deltaCount = 0;
 	let streamedTokens = 0;
 	let reportedOutput: number | undefined;
 	let lastShownAt: number | undefined;
 
 	// Per-instruction totals for the settled average.  Only successful messages
-	// with a measurable span are counted.
+	// with a confirmed `usage.output` and a measurable span are counted.
 	let runOutputTokens = 0;
 	let runGenerationMs = 0;
 	let runMessages = 0;
@@ -166,6 +169,7 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 		active = true;
 		startedAt = now();
 		firstDeltaAt = undefined;
+		deltaCount = 0;
 		streamedTokens = 0;
 		reportedOutput = undefined;
 		lastShownAt = undefined;
@@ -181,6 +185,7 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			active = false;
 			startedAt = 0;
 			firstDeltaAt = undefined;
+			deltaCount = 0;
 			streamedTokens = 0;
 			reportedOutput = undefined;
 			lastShownAt = undefined;
@@ -204,6 +209,7 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			const delta = deltaText(event);
 			if (delta !== undefined && delta.length > 0) {
 				firstDeltaAt ??= now();
+				deltaCount += 1;
 				streamedTokens += estimateTokens(delta);
 			}
 
@@ -228,14 +234,24 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			if (!ctx.hasUI || message.role !== "assistant" || !active) return;
 
 			const finishedAt = now();
-			const tokens = outputTokens(message.usage) ?? reportedOutput ?? streamedTokens;
+			// `usage.output` is the confirmed token count.  The partial and
+			// character-estimate fallbacks are only for the live/one-message
+			// display; averaging them would mix estimates into a usage total.
+			const confirmedTokens = outputTokens(message.usage);
+			const tokens = confirmedTokens ?? reportedOutput ?? streamedTokens;
 			const generationSpan = firstDeltaAt !== undefined ? finishedAt - firstDeltaAt : undefined;
 			const totalSpan = finishedAt - startedAt;
+			// A one-chunk response has no useful generation span, so it falls back
+			// to the whole message (TTFT included).  Several deltas are measurable
+			// even below `fallbackSpanMs` and must not absorb TTFT.
 			const spanMs =
-				generationSpan !== undefined && generationSpan >= fallbackSpanMs ? generationSpan : totalSpan;
+				generationSpan !== undefined && (deltaCount > 1 || generationSpan >= fallbackSpanMs)
+					? generationSpan
+					: totalSpan;
 
 			active = false;
 			firstDeltaAt = undefined;
+			deltaCount = 0;
 			lastShownAt = undefined;
 
 			// A failed or aborted message has no meaningful rate; leaving the
@@ -245,9 +261,11 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 				return;
 			}
 
-			runOutputTokens += tokens;
-			runGenerationMs += spanMs;
-			runMessages += 1;
+			if (confirmedTokens !== undefined) {
+				runOutputTokens += confirmedTokens;
+				runGenerationMs += spanMs;
+				runMessages += 1;
+			}
 			show(tokens, spanMs, ctx);
 		},
 
@@ -271,6 +289,7 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			active = false;
 			startedAt = 0;
 			firstDeltaAt = undefined;
+			deltaCount = 0;
 			streamedTokens = 0;
 			reportedOutput = undefined;
 			lastShownAt = undefined;

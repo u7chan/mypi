@@ -44,9 +44,12 @@ export function formatCachedTokens(tokens: number): string {
 	return `${trim((tokens / 1e6).toFixed(2))}M`;
 }
 
-/** Footer text for one cache hit, e.g. `cached 12.3k tok`. */
+/**
+ * Footer text for one cache hit, e.g. `cached 12.3k`.  The unit is implied:
+ * spelling `tok` here sits next to the `tok/s` segment and reads as a rate.
+ */
 export function formatCacheReuseStatus(reuse: CacheReuse): string {
-	return `cached ${formatCachedTokens(reuse.cachedTokens)} tok`;
+	return `cached ${formatCachedTokens(reuse.cachedTokens)}`;
 }
 
 export interface CacheReuseStatusContext {

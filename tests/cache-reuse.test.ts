@@ -35,8 +35,8 @@ describe("footer formatting", () => {
 	});
 
 	test("renders the status without a dollar estimate", () => {
-		expect(formatCacheReuseStatus({ cachedTokens: 200_000 })).toBe("cached 200k tok");
-		expect(formatCacheReuseStatus({ cachedTokens: 12_345 })).toBe("cached 12.3k tok");
+		expect(formatCacheReuseStatus({ cachedTokens: 200_000 })).toBe("cached 200k");
+		expect(formatCacheReuseStatus({ cachedTokens: 12_345 })).toBe("cached 12.3k");
 	});
 
 	test("dims only the label", () => {
@@ -45,10 +45,10 @@ describe("footer formatting", () => {
 				return `<${color}>${text}</${color}>`;
 			},
 		};
-		expect(formatThemedCacheReuse("cached 200k tok", theme)).toBe(
-			"<dim>cached</dim> 200k tok",
+		expect(formatThemedCacheReuse("cached 200k", theme)).toBe(
+			"<dim>cached</dim> 200k",
 		);
-		expect(formatThemedCacheReuse("cached 200k tok")).toBe("cached 200k tok");
+		expect(formatThemedCacheReuse("cached 200k")).toBe("cached 200k");
 	});
 });
 
@@ -81,12 +81,12 @@ describe("controller lifecycle", () => {
 		expect(updates).toHaveLength(1);
 
 		controller.messageEnd({ role: "assistant", usage: { input: 10_000, cacheRead: 200_000 } }, ctx);
-		expect(updates.at(-1)).toEqual([STATUS_KEY, "cached 200k tok"]);
+		expect(updates.at(-1)).toEqual([STATUS_KEY, "cached 200k"]);
 		expect(controller.getLatest()).toEqual({ cachedTokens: 200_000 });
 
 		// The latest response wins.
 		controller.messageEnd({ role: "assistant", usage: { cacheRead: 1_500 } }, ctx);
-		expect(updates.at(-1)).toEqual([STATUS_KEY, "cached 1.5k tok"]);
+		expect(updates.at(-1)).toEqual([STATUS_KEY, "cached 1.5k"]);
 
 		// A hit-less response clears the stale hit display.
 		controller.messageEnd({ role: "assistant", usage: { cacheRead: 0, input: 42 } }, ctx);

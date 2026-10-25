@@ -256,6 +256,72 @@ describe("tok-rate controller", () => {
 		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
 	});
 
+	test("keeps a short multi-delta response out of the TTFT fallback", () => {
+		const clock = createClock();
+		const { ctx, statuses } = createFakeUi();
+		const controller = createTokRateController({ now: clock.now });
+
+		// First token after 3s of TTFT, then 80 tokens in 80ms.
+		controller.messageStart({ role: "assistant" }, ctx);
+		clock.advance(3_000);
+		controller.messageUpdate(textDelta("a".repeat(200)), ctx);
+		clock.advance(40);
+		controller.messageUpdate(textDelta("b".repeat(120)), ctx);
+		clock.advance(40);
+		controller.messageEnd({ role: "assistant", usage: { output: 80 }, stopReason: "stop" }, ctx);
+
+		expect(statuses.at(-1)?.[1]).toBe("1000<dim> tok/s</dim>");
+		controller.agentSettled(ctx);
+		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 1000<dim> tok/s</dim>");
+	});
+
+	test("averages only responses with confirmed usage", () => {
+		const clock = createClock();
+		const { ctx, statuses } = createFakeUi();
+		const controller = createTokRateController({ now: clock.now });
+
+		// Confirmed: 100 tokens over 1s.
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
+		clock.advance(1_000);
+		controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason: "stop" }, ctx);
+
+		// No confirmed usage: the display still shows the estimate, but the
+		// instruction average must keep using only confirmed usage.
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("b".repeat(400)), ctx);
+		clock.advance(1_000);
+		controller.messageEnd({ role: "assistant", usage: { output: 0 }, stopReason: "stop" }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("100<dim> tok/s</dim>");
+
+		controller.agentSettled(ctx);
+		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 100<dim> tok/s</dim>");
+
+		// Nothing confirmed at all: no average to show.
+		controller.reset(ctx);
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("c".repeat(400)), ctx);
+		clock.advance(1_000);
+		controller.messageEnd({ role: "assistant", stopReason: "stop" }, ctx);
+		controller.agentSettled(ctx);
+		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
+	});
+
+	test("hides the average when every message failed", () => {
+		for (const stopReason of ["error", "aborted"]) {
+			const clock = createClock();
+			const { ctx, statuses } = createFakeUi();
+			const controller = createTokRateController({ now: clock.now });
+
+			controller.messageStart({ role: "assistant" }, ctx);
+			controller.messageUpdate(textDelta("a".repeat(400)), ctx);
+			clock.advance(1_000);
+			controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason }, ctx);
+			controller.agentSettled(ctx);
+			expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
+		}
+	});
+
 	test("resets on a new instruction and survives a user or tool-result message", () => {
 		const clock = createClock();
 		const { ctx, statuses } = createFakeUi();

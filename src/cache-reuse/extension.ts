@@ -27,7 +27,7 @@ export type {
 /**
  * Shows how many tokens of the latest response came from the prompt cache.
  *
- * The segment reads `cached 1.5k tok` and only exists while the latest
+ * The segment reads `cached 1.5k` and only exists while the latest
  * assistant response reported a cache hit.  No dollar estimate is shown: the
  * usual subscription-backed setup never bills those catalogue rates.
  */

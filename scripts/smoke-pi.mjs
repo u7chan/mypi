@@ -143,9 +143,9 @@ try {
 	assert(working.includes("Working (1s)"));
 	assert.equal(statuses.get("elapsed"), `elapsed ${Math.floor(duration / 1000)}s`);
 	assert.match(statuses.get("cache-ttl"), /^ttl \d:\d\d$/);
-	assert.match(statuses.get("cache-reuse"), /^cached 1k tok$/);
+	assert.match(statuses.get("cache-reuse"), /^cached 1k$/);
 	assert.match(statuses.get("tok"), /^avg \d+(?:\.\d)? tok\/s$/);
-	assert.match(component.render(160)[2], /^elapsed .* · avg .* tok\/s · ttl .* · cached 1k tok · .*example\/fixture.*PR #7/);
+	assert.match(component.render(160)[2], /^elapsed .* · avg .* tok\/s · ttl .* · cached 1k · .*example\/fixture.*PR #7/);
 	// OSC 8 link widths and closing are checked with the host's actual parser.
 	session.setSessionName("確認👩‍💻é".repeat(50));
 	for (const width of [0, 1, 2, 20, 40, 80, 160]) {

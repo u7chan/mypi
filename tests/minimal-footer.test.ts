@@ -71,7 +71,7 @@ describe("buildFooterLines", () => {
 				getExtensionStatuses: () =>
 					new Map([
 						["cache-ttl", "cache hit"],
-						["cache-reuse", "cached 6.8k tok"],
+						["cache-reuse", "cached 6.8k"],
 					]),
 			}),
 			model: { id: "glm-5.3-flash", provider: "zai", reasoning: true },
@@ -90,7 +90,7 @@ describe("buildFooterLines", () => {
 		expect(lines[1]).not.toMatch(/[↑↓]|R\d|CH|\$/);
 		expect(lines[1]).toMatch(/\S {2,}\S/); // left and right are padded apart
 		// Statuses follow the reading order, not the map order.
-		expect(lines[2]).toBe("cache hit<dim> · </dim>cached 6.8k tok");
+		expect(lines[2]).toBe("cache hit<dim> · </dim>cached 6.8k");
 	});
 
 	test("uses the fallback and dim colour when context usage is unknown", () => {
@@ -174,7 +174,7 @@ describe("buildFooterLines", () => {
 					new Map([
 						["git", "example/repo PR #1"],
 						["zzz-extra", "zzz"],
-						["cache-reuse", "cached 1k tok"],
+						["cache-reuse", "cached 1k"],
 						["tok", "4.6 tok/s"],
 						["cache-ttl", "ttl 4:31"],
 						["elapsed", "elapsed 2s"],
@@ -190,7 +190,7 @@ describe("buildFooterLines", () => {
 				"elapsed 2s",
 				"4.6 tok/s",
 				"ttl 4:31",
-				"cached 1k tok",
+				"cached 1k",
 				"aaa",
 				"zzz",
 				"example/repo PR #1",

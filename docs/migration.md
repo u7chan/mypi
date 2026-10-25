@@ -46,7 +46,7 @@ elapsedの確定タイミングは`agent_end`ではなく、従来どおり`agen
   小文字のラベル（dim）と値（通常色）に揃えました。` · `区切りで並べ、
   `elapsed` / `tok` / `cache-ttl` / `cache-reuse`の順、`git`は最後です。
 - cache-reuse: サブスクリプション運用では金額の意味がないため、`usage.cost`とカタログ単価に
-  基づく節約額の推定を削除し、`cached 1.5k tok`のようにトークン数だけを表示します。
+  基づく節約額の推定を削除し、`cached 1.5k`のようにトークン数だけを表示します。
 - cache-ttl: カウントダウンを`ttl 4:31`にし、状態語を`cache auto` / `cache off` / `cache hit` /
   `cache expired`に整理しました。情報のない`pending` / `unknown`は表示しません。
 
@@ -77,14 +77,15 @@ SDKではUI sinkを注入して検証し、対話TUIでは実際のCLIの描画�
 
 環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.4.0です。
 
-- `bun test`: 7機能と単一エントリーポイントの計137件が成功しました。失敗は0件です。
+- `bun test`: 7機能と単一エントリーポイントの計140件が成功しました。失敗は0件です。
 - `node scripts/smoke-pi.mjs`: Pi 1.4.0のSDKで1エントリーポイント、7機能、再試行ループ、
   `elapsed` / `tok/s` / `ttl` / `cached`のステータス、終了時の後処理を確認しました。
 - `scripts/smoke-tui.mjs`: regular TUIをPTYで起動し、
-  `elapsed 2s · avg 4.6 tok/s · cache hit · cached 1k tok · u7chan/mypi PR #3`の並びと区切り、
+  `elapsed 2s · avg 4.6 tok/s · cache hit · cached 1k · u7chan/mypi PR #3`の並びと区切り、
   停止後に`avg`へ切り替わることを実測しました。
   `/minimal-footer`、`/dm`、`/quit`の動作と終了コード0も確認しました。
 - 金額推定の削除と`cache-savings`から`cache-reuse`へのキー変更はテストで確認しています。
+- `avg`は確定した`usage.output`だけを集計し、複数差分の短時間応答でもTTFTを含めないことを回帰テストで確認しています。
 
 これらもローカルHTTPモックとフィクスチャによる検証で、実プロバイダーや実PRを使ったものではありません。
 
