@@ -9,11 +9,23 @@
  * `avg N tok/s`: successful messages' combined output divided by their
  * combined generation time, so tool waits and other idle time are excluded.
  *
+ * Wall-clock time between deltas is only a proxy for generation time.  Pi
+ * emits `message_start` after the response headers, gateways coalesce
+ * chunks, and a short reply often arrives as one or two flushes a few
+ * milliseconds apart.  Dividing its tokens by that window produces rates in
+ * the thousands.  A response is therefore only rated when the stream lasted
+ * at least `minSpanMs` and produced at least `minArrivals` distinct arrival
+ * instants; otherwise the footer shows `-- tok/s` and the message is left out
+ * of the average.
+ *
  * Live numbers are estimates.  Most providers report usage only on the final
  * chunk, so the running rate divides a character-based token estimate by the
  * time since the first delta.  ASCII counts as a quarter token, everything
  * else (CJK, emoji) as one, which keeps Japanese output from reading several
  * times faster than it is.  As soon as `partial.usage.output` appears it wins.
+ * Providers that report reasoning tokens without streaming them would put
+ * tokens into the numerator whose generation never reached the clock, so
+ * `usage.reasoning` is subtracted when no `thinking_delta` was seen.
  *
  * The clock and the throttle are injectable so the state machine can be driven
  * without a terminal or real timers.
@@ -26,6 +38,12 @@ export const DEFAULT_THROTTLE_MS = 250;
 
 /** Too-short spans divide by noise; wait for a measurable window. */
 export const DEFAULT_MIN_SPAN_MS = 400;
+
+/**
+ * Bursts that arrive within the same millisecond are one delivery event, not
+ * independent samples.  A rate needs enough of them to be more than jitter.
+ */
+export const DEFAULT_MIN_ARRIVALS = 8;
 
 /**
  * Rough output-token estimate for a streamed delta.
@@ -62,6 +80,11 @@ export function formatThemedAverageTokRateStatus(tokensPerSecond: number, theme:
 	return `${theme.fg("dim", "avg")} ${formatTokPerSecond(tokensPerSecond)}${theme.fg("dim", " tok/s")}`;
 }
 
+/** No trustworthy rate: the response was too short or too bursty to time. */
+export function formatThemedMissingTokRateStatus(theme: TokRateTheme): string {
+	return theme.fg("dim", "-- tok/s");
+}
+
 export interface TokRateUi {
 	theme: TokRateTheme;
 	setStatus(key: string, text: string | undefined): void;
@@ -75,6 +98,8 @@ export interface TokRateContext {
 
 export interface AssistantUsageLike {
 	output?: number;
+	/** Subset of `output`; reported only by providers that break it out. */
+	reasoning?: number;
 }
 
 export interface AssistantMessageLike {
@@ -94,6 +119,7 @@ export interface TokRateControllerOptions {
 	now?: () => number;
 	throttleMs?: number;
 	minSpanMs?: number;
+	minArrivals?: number;
 }
 
 export interface TokRateController {
@@ -124,6 +150,27 @@ function outputTokens(usage: AssistantUsageLike | undefined): number | undefined
 	return output;
 }
 
+function reasoningTokens(usage: AssistantUsageLike | undefined): number {
+	const reasoning = usage?.reasoning;
+	if (typeof reasoning !== "number" || !Number.isFinite(reasoning) || reasoning <= 0) return 0;
+	return reasoning;
+}
+
+/**
+ * Output tokens the stream actually carried.
+ *
+ * `usage.output` includes reasoning.  When the provider streams thinking the
+ * first `thinking_delta` opens the window, so those tokens are timed.  When it
+ * only reports them, the clock starts at the first visible delta and the
+ * reasoning tokens must come out of the numerator.
+ */
+function visibleOutput(usage: AssistantUsageLike | undefined, reasoningStreamed: boolean): number | undefined {
+	const output = outputTokens(usage);
+	if (output === undefined) return undefined;
+	if (reasoningStreamed) return output;
+	return Math.max(0, output - reasoningTokens(usage));
+}
+
 /**
  * One assistant message in flight.
  *
@@ -131,22 +178,30 @@ function outputTokens(usage: AssistantUsageLike | undefined): number | undefined
  * event, not as a `message_update`), deltas accumulate the live estimate, and
  * `messageEnd` closes it.  A missing start - a mid-stream reload, or a test
  * driving single events - opens the measurement on the first delta.
+ *
+ * A stream is only measurable when it lasted long enough and produced enough
+ * distinct arrival instants: a message that ends with one or two flushes, or
+ * whose deltas share a millisecond, has no observable generation window.  Such
+ * a message is reported as `--` instead of dividing by that noise, and it does
+ * not enter the instruction average.
  */
 export function createTokRateController(options: TokRateControllerOptions = {}): TokRateController {
 	const now = options.now ?? (() => Date.now());
 	const throttleMs = options.throttleMs ?? DEFAULT_THROTTLE_MS;
 	const minSpanMs = options.minSpanMs ?? DEFAULT_MIN_SPAN_MS;
+	const minArrivals = options.minArrivals ?? DEFAULT_MIN_ARRIVALS;
 
 	let active = false;
-	let startedAt = 0;
 	let firstDeltaAt: number | undefined;
-	let deltaCount = 0;
+	let lastDeltaAt: number | undefined;
+	let arrivalSlots = 0;
+	let thinkingDeltas = 0;
 	let streamedTokens = 0;
 	let reportedOutput: number | undefined;
 	let lastShownAt: number | undefined;
 
-	// Per-instruction totals for the settled average.  Only successful messages
-	// with a confirmed `usage.output` and a measurable span are counted.
+	// Per-instruction totals for the settled average.  Only successful,
+	// measurable messages with a confirmed `usage.output` are counted.
 	let runOutputTokens = 0;
 	let runGenerationMs = 0;
 	let runMessages = 0;
@@ -155,14 +210,20 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 	};
 
-	const begin = () => {
-		active = true;
-		startedAt = now();
+	const forgetMessage = () => {
+		active = false;
 		firstDeltaAt = undefined;
-		deltaCount = 0;
+		lastDeltaAt = undefined;
+		arrivalSlots = 0;
+		thinkingDeltas = 0;
 		streamedTokens = 0;
 		reportedOutput = undefined;
 		lastShownAt = undefined;
+	};
+
+	const begin = () => {
+		forgetMessage();
+		active = true;
 	};
 
 	const show = (tokens: number, spanMs: number, ctx: TokRateContext) => {
@@ -170,15 +231,12 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 		ctx.ui.setStatus(STATUS_KEY, formatThemedTokRateStatus((tokens * 1000) / spanMs, ctx.ui.theme));
 	};
 
+	/** Both the live update and the final value need a window worth dividing by. */
+	const measurable = (spanMs: number) => spanMs >= minSpanMs && arrivalSlots >= minArrivals;
+
 	return {
 		reset(ctx) {
-			active = false;
-			startedAt = 0;
-			firstDeltaAt = undefined;
-			deltaCount = 0;
-			streamedTokens = 0;
-			reportedOutput = undefined;
-			lastShownAt = undefined;
+			forgetMessage();
 			runOutputTokens = 0;
 			runGenerationMs = 0;
 			runMessages = 0;
@@ -196,20 +254,24 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			if (event.partial?.role !== undefined && event.partial.role !== "assistant") return;
 			if (!active) begin();
 
+			const at = now();
 			const delta = deltaText(event);
 			if (delta !== undefined && delta.length > 0) {
-				firstDeltaAt ??= now();
-				deltaCount += 1;
+				firstDeltaAt ??= at;
+				if (event.type === "thinking_delta") thinkingDeltas += 1;
+				if (at !== lastDeltaAt) {
+					arrivalSlots += 1;
+					lastDeltaAt = at;
+				}
 				streamedTokens += estimateTokens(delta);
 			}
 
-			const reported = outputTokens(event.partial?.usage);
+			const reported = visibleOutput(event.partial?.usage, thinkingDeltas > 0);
 			if (reported !== undefined && reported > (reportedOutput ?? 0)) reportedOutput = reported;
 			if (firstDeltaAt === undefined) return;
 
-			const at = now();
 			const spanMs = at - firstDeltaAt;
-			if (spanMs < minSpanMs) return;
+			if (!measurable(spanMs)) return;
 			if (lastShownAt !== undefined && at - lastShownAt < throttleMs) return;
 
 			lastShownAt = at;
@@ -224,45 +286,43 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			if (!ctx.hasUI || message.role !== "assistant" || !active) return;
 
 			const finishedAt = now();
-			// `usage.output` is the confirmed token count.  The partial and
-			// character-estimate fallbacks are only for the live/one-message
-			// display; averaging them would mix estimates into a usage total.
-			const confirmedTokens = outputTokens(message.usage);
+			const confirmedTokens = visibleOutput(message.usage, thinkingDeltas > 0);
 			const tokens = confirmedTokens ?? reportedOutput ?? streamedTokens;
 			const generationSpan = firstDeltaAt !== undefined ? finishedAt - firstDeltaAt : undefined;
-			const totalSpan = finishedAt - startedAt;
-			// Zero or one delta means the provider sent the message in one chunk;
-			// there is no measurable generation span, so use the whole message
-			// (TTFT included).  Several deltas are measurable and must not absorb
-			// TTFT, however short the generation was.
-			const spanMs = deltaCount > 1 && generationSpan !== undefined ? generationSpan : totalSpan;
+			// Read the window before the per-message state is cleared.
+			const timed = generationSpan !== undefined && measurable(generationSpan);
 
-			active = false;
-			firstDeltaAt = undefined;
-			deltaCount = 0;
-			lastShownAt = undefined;
+			forgetMessage();
 
 			// A failed or aborted message has no meaningful rate; leaving the
 			// previous one on screen would describe the wrong response.
-			if (message.stopReason === "error" || message.stopReason === "aborted" || tokens <= 0 || spanMs <= 0) {
+			if (message.stopReason === "error" || message.stopReason === "aborted" || tokens <= 0) {
 				clear(ctx);
 				return;
 			}
 
+			// A one-chunk reply, or a burst that shares a few milliseconds, has
+			// no generation window; any rate from it would be delivery noise.
+			if (!timed || generationSpan === undefined) {
+				ctx.ui.setStatus(STATUS_KEY, formatThemedMissingTokRateStatus(ctx.ui.theme));
+				return;
+			}
+
+			// `usage.output` is the confirmed token count.  The partial and
+			// character-estimate fallbacks are only for the live/one-message
+			// display; averaging them would mix estimates into a usage total.
 			if (confirmedTokens !== undefined) {
 				runOutputTokens += confirmedTokens;
-				runGenerationMs += spanMs;
+				runGenerationMs += generationSpan;
 				runMessages += 1;
 			}
-			show(tokens, spanMs, ctx);
+			show(tokens, generationSpan, ctx);
 		},
 
 		agentSettled(ctx) {
 			if (!ctx.hasUI) return;
 
-			active = false;
-			firstDeltaAt = undefined;
-			lastShownAt = undefined;
+			forgetMessage();
 			if (runMessages === 0 || runGenerationMs <= 0) {
 				clear(ctx);
 				return;
@@ -274,13 +334,7 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 		},
 
 		sessionShutdown(ctx) {
-			active = false;
-			startedAt = 0;
-			firstDeltaAt = undefined;
-			deltaCount = 0;
-			streamedTokens = 0;
-			reportedOutput = undefined;
-			lastShownAt = undefined;
+			forgetMessage();
 			runOutputTokens = 0;
 			runGenerationMs = 0;
 			runMessages = 0;

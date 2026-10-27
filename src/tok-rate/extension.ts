@@ -1,10 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createTokRateController,
+	DEFAULT_MIN_ARRIVALS,
 	DEFAULT_MIN_SPAN_MS,
 	DEFAULT_THROTTLE_MS,
 	estimateTokens,
 	formatThemedAverageTokRateStatus,
+	formatThemedMissingTokRateStatus,
 	formatThemedTokRateStatus,
 	formatTokPerSecond,
 	STATUS_KEY,
@@ -16,10 +18,12 @@ import {
 // Re-export the pure pieces so they can be exercised without a Pi runtime.
 export {
 	createTokRateController,
+	DEFAULT_MIN_ARRIVALS,
 	DEFAULT_MIN_SPAN_MS,
 	DEFAULT_THROTTLE_MS,
 	estimateTokens,
 	formatThemedAverageTokRateStatus,
+	formatThemedMissingTokRateStatus,
 	formatThemedTokRateStatus,
 	formatTokPerSecond,
 	STATUS_KEY,
@@ -39,8 +43,10 @@ export type {
  * Shows the generation speed of the latest assistant message as `4.6 tok/s`.
  *
  * The value updates a few times per second while deltas stream and is replaced
- * by the provider-reported `usage.output` rate at `message_end`.  When the
- * instruction settles, the footer switches to `avg 92 tok/s`: the successful
+ * by the provider-reported `usage.output` rate at `message_end`.  A response
+ * whose deltas span less than 400ms or share fewer than eight arrival instants
+ * cannot be timed; it shows `-- tok/s` and stays out of the average.  When the
+ * instruction settles, the footer switches to `avg 92 tok/s`: the measurable
  * messages' combined output over their combined generation time.  A new
  * instruction clears it, and failed or aborted messages are excluded.
  */
