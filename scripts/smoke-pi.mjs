@@ -88,10 +88,17 @@ try {
 					message.errorMessage = "503 Service unavailable";
 					stream.push({ type: "error", reason: "error", error: message });
 				} else {
-					message.content.push({ type: "text", text: "fixture OK" });
+					message.content.push({ type: "text", text: "" });
 					stream.push({ type: "text_start", contentIndex: 0, partial: message });
-					stream.push({ type: "text_delta", contentIndex: 0, delta: "fixture OK", partial: message });
-					stream.push({ type: "text_end", contentIndex: 0, content: "fixture OK", partial: message });
+					// Spread the reply over ~450ms so tok-rate has a measurable
+					// window (>=400ms and >=8 arrival instants).
+					for (let index = 0; index < 10; index++) {
+						message.content[0].text += "fixture ";
+						message.usage.output = index + 2;
+						stream.push({ type: "text_delta", contentIndex: 0, delta: "fixture ", partial: message });
+						await sleep(50);
+					}
+					stream.push({ type: "text_end", contentIndex: 0, content: message.content[0].text, partial: message });
 					ai.calculateCost(model, message.usage);
 					message.stopReason = "stop";
 					stream.push({ type: "done", reason: "stop", message });

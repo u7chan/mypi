@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import tokRateExtension, {
 	createTokRateController,
+	DEFAULT_MIN_ARRIVALS,
 	DEFAULT_MIN_SPAN_MS,
 	DEFAULT_THROTTLE_MS,
 	estimateTokens,
 	formatThemedAverageTokRateStatus,
+	formatThemedMissingTokRateStatus,
 	formatThemedTokRateStatus,
 	formatTokPerSecond,
 	STATUS_KEY,
@@ -39,12 +41,29 @@ function createClock(startedAt = 0) {
 	};
 }
 
-const start = { type: "start", partial: { role: "assistant", usage: { output: 0 } } };
 const textDelta = (delta: string) => ({
 	type: "text_delta",
 	delta,
 	partial: { role: "assistant", usage: { output: 0 } },
 });
+
+/**
+ * Emit `count` ASCII deltas `gapMs` apart, leaving the clock on the last one.
+ * 40 characters estimate as ten tokens.
+ */
+function emitDeltas(
+	controller: ReturnType<typeof createTokRateController>,
+	ctx: TokRateContext,
+	clock: ReturnType<typeof createClock>,
+	count: number,
+	gapMs: number,
+	chars = 40,
+) {
+	for (let index = 0; index < count; index++) {
+		if (index > 0) clock.advance(gapMs);
+		controller.messageUpdate(textDelta("a".repeat(chars)), ctx);
+	}
+}
 
 describe("estimateTokens", () => {
 	test("counts ASCII as a quarter token and wide characters as one", () => {
@@ -75,10 +94,14 @@ describe("formatTokPerSecond", () => {
 		expect(formatThemedTokRateStatus(158.4, theme)).toBe("158<dim> tok/s</dim>");
 		expect(formatThemedAverageTokRateStatus(92.3, theme)).toBe("<dim>avg</dim> 92.3<dim> tok/s</dim>");
 	});
+
+	test("renders the missing marker for untimed responses", () => {
+		expect(formatThemedMissingTokRateStatus(theme)).toBe("<dim>-- tok/s</dim>");
+	});
 });
 
 describe("tok-rate controller", () => {
-	test("shows a throttled live estimate once the span is measurable", () => {
+	test("shows a throttled live estimate once the window is measurable", () => {
 		const clock = createClock();
 		const { ctx, statuses } = createFakeUi();
 		const controller = createTokRateController({ now: clock.now });
@@ -86,27 +109,40 @@ describe("tok-rate controller", () => {
 		controller.messageStart({ role: "assistant" }, ctx);
 		expect(statuses).toEqual([[STATUS_KEY, undefined]]);
 
-		// 400 ASCII characters = 100 estimated tokens, all sent at t=0.
-		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
-		expect(statuses).toHaveLength(1);
-		expect(statuses.at(-1)?.[1]).toBeUndefined();
-
-		clock.advance(DEFAULT_MIN_SPAN_MS - 1);
-		controller.messageUpdate(textDelta("b"), ctx);
+		// Eight arrivals over 350ms are still below both gates.
+		emitDeltas(controller, ctx, clock, 8, 50);
 		expect(statuses).toHaveLength(1);
 
-		clock.advance(1);
-		controller.messageUpdate(textDelta("c"), ctx);
-		expect(statuses.at(-1)?.[1]).toBe("251<dim> tok/s</dim>");
+		// A ninth arrival at 400ms with 90 estimated tokens.
+		clock.advance(50);
+		controller.messageUpdate(textDelta("a".repeat(40)), ctx);
+		expect(statuses.at(-1)?.[1]).toBe("225<dim> tok/s</dim>");
 
 		// Inside the throttle window nothing repaints.
 		clock.advance(DEFAULT_THROTTLE_MS - 1);
-		controller.messageUpdate(textDelta("d"), ctx);
+		controller.messageUpdate(textDelta("a".repeat(40)), ctx);
 		expect(statuses).toHaveLength(2);
 
 		clock.advance(1);
-		controller.messageUpdate(textDelta("e"), ctx);
+		controller.messageUpdate(textDelta("a".repeat(40)), ctx);
 		expect(statuses).toHaveLength(3);
+	});
+
+	test("does not rate a burst that shares a millisecond", () => {
+		const clock = createClock();
+		const { ctx, statuses } = createFakeUi();
+		const controller = createTokRateController({ now: clock.now });
+
+		// 400 estimated tokens delivered as three events in the same millisecond.
+		controller.messageStart({ role: "assistant" }, ctx);
+		controller.messageUpdate(textDelta("a".repeat(800)), ctx);
+		controller.messageUpdate(textDelta("a".repeat(800)), ctx);
+		clock.advance(5);
+		controller.messageUpdate(textDelta("a".repeat(800)), ctx);
+		expect(statuses).toHaveLength(1);
+
+		controller.messageEnd({ role: "assistant", usage: { output: 400 }, stopReason: "stop" }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("<dim>-- tok/s</dim>");
 	});
 
 	test("uses provider-reported usage when it is ahead of the estimate", () => {
@@ -115,8 +151,8 @@ describe("tok-rate controller", () => {
 		const controller = createTokRateController({ now: clock.now });
 
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("a".repeat(40)), ctx);
-		clock.advance(1_000);
+		emitDeltas(controller, ctx, clock, 8, 50, 2);
+		clock.advance(650);
 		controller.messageUpdate(
 			{ type: "text_delta", delta: "hi", partial: { role: "assistant", usage: { output: 60 } } },
 			ctx,
@@ -131,16 +167,18 @@ describe("tok-rate controller", () => {
 		// Anthropic streams `output_tokens: 1` from the start and only updates it
 		// when the message ends; trusting it would report 1 token per second.
 		const stale = { role: "assistant", usage: { output: 1 } };
+		const staleDelta = (chars: number) => ({ type: "text_delta", delta: "a".repeat(chars), partial: stale });
 
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate({ type: "text_delta", delta: "a".repeat(200), partial: stale }, ctx);
-		clock.advance(1_000);
-		controller.messageUpdate({ type: "text_delta", delta: "b".repeat(200), partial: stale }, ctx);
-		expect(statuses.at(-1)?.[1]).toBe("100<dim> tok/s</dim>");
+		for (let index = 0; index < 9; index++) {
+			if (index > 0) clock.advance(250);
+			controller.messageUpdate(staleDelta(40), ctx);
+		}
+		expect(statuses.at(-1)?.[1]).toBe("45.0<dim> tok/s</dim>");
 
 		clock.advance(1_000);
-		controller.messageUpdate({ type: "text_delta", delta: "c".repeat(200), partial: stale }, ctx);
-		expect(statuses.at(-1)?.[1]).toBe("75.0<dim> tok/s</dim>");
+		controller.messageUpdate(staleDelta(40), ctx);
+		expect(statuses.at(-1)?.[1]).toBe("33.3<dim> tok/s</dim>");
 	});
 
 	test("freezes the confirmed rate over the generation span at message end", () => {
@@ -149,47 +187,62 @@ describe("tok-rate controller", () => {
 		const controller = createTokRateController({ now: clock.now });
 
 		controller.messageStart({ role: "assistant" }, ctx);
-		clock.advance(500);
-		controller.messageUpdate(textDelta("hello"), ctx);
-		clock.advance(500);
-		controller.messageUpdate(textDelta("world"), ctx);
-		clock.advance(2_000);
+		emitDeltas(controller, ctx, clock, 10, 100, 4);
 		controller.messageEnd({ role: "assistant", usage: { output: 300 }, stopReason: "stop" }, ctx);
 
-		expect(statuses.at(-1)?.[1]).toBe("120<dim> tok/s</dim>");
+		expect(statuses.at(-1)?.[1]).toBe("333<dim> tok/s</dim>");
 	});
 
-	test("falls back to the full span when the provider sends one burst", () => {
+	test("shows the missing marker for one-chunk and short bursts", () => {
+		// A single chunk after a long wait has no observable generation window.
+		const chunkedClock = createClock();
+		const chunkedUi = createFakeUi();
+		const chunked = createTokRateController({ now: chunkedClock.now });
+		chunked.messageStart({ role: "assistant" }, chunkedUi.ctx);
+		chunkedClock.advance(2_000);
+		chunked.messageUpdate(textDelta("fixture OK"), chunkedUi.ctx);
+		chunkedClock.advance(10);
+		chunked.messageEnd({ role: "assistant", usage: { output: 10 }, stopReason: "stop" }, chunkedUi.ctx);
+		expect(chunkedUi.statuses.at(-1)?.[1]).toBe("<dim>-- tok/s</dim>");
+		chunked.agentSettled(chunkedUi.ctx);
+		expect(chunkedUi.statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
+
+		// Three flushes a millisecond apart: 11 tokens in 2ms is 5500 tok/s.
+		const burstClock = createClock();
+		const burstUi = createFakeUi();
+		const burst = createTokRateController({ now: burstClock.now });
+		burst.messageStart({ role: "assistant" }, burstUi.ctx);
+		burst.messageUpdate(textDelta("a".repeat(12)), burstUi.ctx);
+		burstClock.advance(1);
+		burst.messageUpdate(textDelta("a".repeat(28)), burstUi.ctx);
+		burstClock.advance(1);
+		burst.messageUpdate(textDelta("a".repeat(4)), burstUi.ctx);
+		burst.messageEnd({ role: "assistant", usage: { output: 11 }, stopReason: "stop" }, burstUi.ctx);
+		expect(burstUi.statuses.at(-1)?.[1]).toBe("<dim>-- tok/s</dim>");
+	});
+
+	test("keeps bursty responses out of the instruction average", () => {
 		const clock = createClock();
 		const { ctx, statuses } = createFakeUi();
 		const controller = createTokRateController({ now: clock.now });
 
+		// 90 tokens over 900ms.
 		controller.messageStart({ role: "assistant" }, ctx);
-		clock.advance(2_000);
-		controller.messageUpdate(textDelta("fixture OK"), ctx);
-		clock.advance(10);
-		controller.messageEnd({ role: "assistant", usage: { output: 10 }, stopReason: "stop" }, ctx);
+		emitDeltas(controller, ctx, clock, 10, 100);
+		controller.messageEnd({ role: "assistant", usage: { output: 90 }, stopReason: "stop" }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("100<dim> tok/s</dim>");
 
-		expect(statuses.at(-1)?.[1]).toBe("5.0<dim> tok/s</dim>");
-	});
-
-	test("uses the whole message for a single delta even when it ends later", () => {
-		const clock = createClock();
-		const { ctx, statuses } = createFakeUi();
-		const controller = createTokRateController({ now: clock.now });
-
-		// One chunk after 3s of TTFT, then the message ends 500ms later.  A
-		// single delta has no measurable generation span, so both the message
-		// rate and the average use start→end (3500ms), not 500ms.
+		// 500 tokens delivered in two flushes must not drag the average down.
 		controller.messageStart({ role: "assistant" }, ctx);
 		clock.advance(3_000);
-		controller.messageUpdate(textDelta("a".repeat(200)), ctx);
-		clock.advance(500);
-		controller.messageEnd({ role: "assistant", usage: { output: 80 }, stopReason: "stop" }, ctx);
+		controller.messageUpdate(textDelta("a".repeat(800)), ctx);
+		clock.advance(1);
+		controller.messageUpdate(textDelta("a".repeat(800)), ctx);
+		controller.messageEnd({ role: "assistant", usage: { output: 500 }, stopReason: "stop" }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("<dim>-- tok/s</dim>");
 
-		expect(statuses.at(-1)?.[1]).toBe("22.9<dim> tok/s</dim>");
 		controller.agentSettled(ctx);
-		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 22.9<dim> tok/s</dim>");
+		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 100<dim> tok/s</dim>");
 	});
 
 	test("drops the value for failed, aborted, or empty responses", () => {
@@ -218,23 +271,21 @@ describe("tok-rate controller", () => {
 		const { ctx, statuses } = createFakeUi();
 		const controller = createTokRateController({ now: clock.now });
 
-		// Message 1: 100 tokens over 1s.
+		// Message 1: 90 tokens over 900ms.
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
-		clock.advance(1_000);
-		controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason: "stop" }, ctx);
+		emitDeltas(controller, ctx, clock, 10, 100);
+		controller.messageEnd({ role: "assistant", usage: { output: 90 }, stopReason: "stop" }, ctx);
 		expect(statuses.at(-1)?.[1]).toBe("100<dim> tok/s</dim>");
 
-		// Message 2: 50 tokens over 1.5s (33.3 tok/s for this message).
+		// Message 2: 45 tokens over 900ms (50 tok/s for this message).
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("b".repeat(200)), ctx);
-		clock.advance(1_500);
-		controller.messageEnd({ role: "assistant", usage: { output: 50 }, stopReason: "stop" }, ctx);
-		expect(statuses.at(-1)?.[1]).toBe("33.3<dim> tok/s</dim>");
+		emitDeltas(controller, ctx, clock, 10, 100);
+		controller.messageEnd({ role: "assistant", usage: { output: 45 }, stopReason: "stop" }, ctx);
+		expect(statuses.at(-1)?.[1]).toBe("50.0<dim> tok/s</dim>");
 
-		// (100 + 50) tokens / (1s + 1.5s) = 60 tok/s.
+		// (90 + 45) tokens / (900ms + 900ms) = 75 tok/s.
 		controller.agentSettled(ctx);
-		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 60.0<dim> tok/s</dim>");
+		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 75.0<dim> tok/s</dim>");
 	});
 
 	test("uses the message rate as the average for a single-message run", () => {
@@ -243,9 +294,8 @@ describe("tok-rate controller", () => {
 		const controller = createTokRateController({ now: clock.now });
 
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
-		clock.advance(1_000);
-		controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason: "stop" }, ctx);
+		emitDeltas(controller, ctx, clock, 10, 100);
+		controller.messageEnd({ role: "assistant", usage: { output: 90 }, stopReason: "stop" }, ctx);
 		controller.agentSettled(ctx);
 
 		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 100<dim> tok/s</dim>");
@@ -257,14 +307,12 @@ describe("tok-rate controller", () => {
 		const controller = createTokRateController({ now: clock.now });
 
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
-		clock.advance(1_000);
-		controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason: "stop" }, ctx);
+		emitDeltas(controller, ctx, clock, 10, 100);
+		controller.messageEnd({ role: "assistant", usage: { output: 90 }, stopReason: "stop" }, ctx);
 
 		// A failed retry after the success must not enter the average.
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("b".repeat(200)), ctx);
-		clock.advance(1_000);
+		emitDeltas(controller, ctx, clock, 10, 100);
 		controller.messageEnd({ role: "assistant", usage: { output: 500 }, stopReason: "error" }, ctx);
 		controller.agentSettled(ctx);
 		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 100<dim> tok/s</dim>");
@@ -277,23 +325,34 @@ describe("tok-rate controller", () => {
 		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
 	});
 
-	test("keeps a short multi-delta response out of the TTFT fallback", () => {
-		const clock = createClock();
-		const { ctx, statuses } = createFakeUi();
-		const controller = createTokRateController({ now: clock.now });
+	test("subtracts reasoning tokens that were not streamed", () => {
+		// 120 output tokens include 20 reasoning tokens the clock never saw.
+		const hiddenClock = createClock();
+		const hiddenUi = createFakeUi();
+		const hidden = createTokRateController({ now: hiddenClock.now });
+		hidden.messageStart({ role: "assistant" }, hiddenUi.ctx);
+		emitDeltas(hidden, hiddenUi.ctx, hiddenClock, 12, 100, 100);
+		hidden.messageEnd(
+			{ role: "assistant", usage: { output: 120, reasoning: 20 }, stopReason: "stop" },
+			hiddenUi.ctx,
+		);
+		expect(hiddenUi.statuses.at(-1)?.[1]).toBe("90.9<dim> tok/s</dim>");
 
-		// First token after 3s of TTFT, then 80 tokens in 80ms.
-		controller.messageStart({ role: "assistant" }, ctx);
-		clock.advance(3_000);
-		controller.messageUpdate(textDelta("a".repeat(200)), ctx);
-		clock.advance(40);
-		controller.messageUpdate(textDelta("b".repeat(120)), ctx);
-		clock.advance(40);
-		controller.messageEnd({ role: "assistant", usage: { output: 80 }, stopReason: "stop" }, ctx);
-
-		expect(statuses.at(-1)?.[1]).toBe("1000<dim> tok/s</dim>");
-		controller.agentSettled(ctx);
-		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 1000<dim> tok/s</dim>");
+		// Streamed thinking starts the clock, so all 120 tokens are timed.
+		const streamedClock = createClock();
+		const streamedUi = createFakeUi();
+		const streamed = createTokRateController({ now: streamedClock.now });
+		streamed.messageStart({ role: "assistant" }, streamedUi.ctx);
+		streamed.messageUpdate(
+			{ type: "thinking_delta", delta: "a".repeat(100), partial: { role: "assistant", usage: { output: 0 } } },
+			streamedUi.ctx,
+		);
+		emitDeltas(streamed, streamedUi.ctx, streamedClock, 12, 100, 100);
+		streamed.messageEnd(
+			{ role: "assistant", usage: { output: 120, reasoning: 20 }, stopReason: "stop" },
+			streamedUi.ctx,
+		);
+		expect(streamedUi.statuses.at(-1)?.[1]).toBe("109<dim> tok/s</dim>");
 	});
 
 	test("averages only responses with confirmed usage", () => {
@@ -301,19 +360,17 @@ describe("tok-rate controller", () => {
 		const { ctx, statuses } = createFakeUi();
 		const controller = createTokRateController({ now: clock.now });
 
-		// Confirmed: 100 tokens over 1s.
+		// Confirmed: 90 tokens over 900ms.
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
-		clock.advance(1_000);
-		controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason: "stop" }, ctx);
+		emitDeltas(controller, ctx, clock, 10, 100);
+		controller.messageEnd({ role: "assistant", usage: { output: 90 }, stopReason: "stop" }, ctx);
 
 		// No confirmed usage: the display still shows the estimate, but the
 		// instruction average must keep using only confirmed usage.
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("b".repeat(400)), ctx);
-		clock.advance(1_000);
+		emitDeltas(controller, ctx, clock, 10, 100);
 		controller.messageEnd({ role: "assistant", usage: { output: 0 }, stopReason: "stop" }, ctx);
-		expect(statuses.at(-1)?.[1]).toBe("100<dim> tok/s</dim>");
+		expect(statuses.at(-1)?.[1]).toBe("111<dim> tok/s</dim>");
 
 		controller.agentSettled(ctx);
 		expect(statuses.at(-1)?.[1]).toBe("<dim>avg</dim> 100<dim> tok/s</dim>");
@@ -321,8 +378,7 @@ describe("tok-rate controller", () => {
 		// Nothing confirmed at all: no average to show.
 		controller.reset(ctx);
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("c".repeat(400)), ctx);
-		clock.advance(1_000);
+		emitDeltas(controller, ctx, clock, 10, 100);
 		controller.messageEnd({ role: "assistant", stopReason: "stop" }, ctx);
 		controller.agentSettled(ctx);
 		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
@@ -335,9 +391,8 @@ describe("tok-rate controller", () => {
 			const controller = createTokRateController({ now: clock.now });
 
 			controller.messageStart({ role: "assistant" }, ctx);
-			controller.messageUpdate(textDelta("a".repeat(400)), ctx);
-			clock.advance(1_000);
-			controller.messageEnd({ role: "assistant", usage: { output: 100 }, stopReason }, ctx);
+			emitDeltas(controller, ctx, clock, 10, 100);
+			controller.messageEnd({ role: "assistant", usage: { output: 90 }, stopReason }, ctx);
 			controller.agentSettled(ctx);
 			expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
 		}
@@ -349,24 +404,18 @@ describe("tok-rate controller", () => {
 		const controller = createTokRateController({ now: clock.now });
 
 		controller.messageStart({ role: "assistant" }, ctx);
-		controller.messageUpdate(textDelta("a".repeat(400)), ctx);
-		clock.advance(1_000);
-		controller.messageUpdate(textDelta("b"), ctx);
+		emitDeltas(controller, ctx, clock, 9, 50);
 		expect(statuses.at(-1)?.[1]).toContain("tok/s");
 
-		controller.reset(ctx);
-		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
-
-		// A user message must not clear the last assistant rate.
-		controller.messageUpdate(textDelta("x"), ctx);
-		clock.advance(1_000);
-		controller.messageUpdate(textDelta("y"), ctx);
+		// A user or tool-result message must not clear the last assistant rate.
 		const shown = statuses.at(-1)?.[1];
 		controller.messageStart({ role: "user" }, ctx);
 		expect(statuses.at(-1)?.[1]).toBe(shown);
-
 		controller.messageEnd({ role: "user" } as never, ctx);
 		expect(statuses.at(-1)?.[1]).toBe(shown);
+
+		controller.reset(ctx);
+		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
 
 		controller.sessionShutdown(ctx);
 		expect(statuses.at(-1)).toEqual([STATUS_KEY, undefined]);
@@ -407,5 +456,11 @@ describe("tok-rate controller", () => {
 			"agent_settled",
 			"session_shutdown",
 		]);
+	});
+
+	test("documents the default gates", () => {
+		expect(DEFAULT_MIN_SPAN_MS).toBe(400);
+		expect(DEFAULT_MIN_ARRIVALS).toBe(8);
+		expect(DEFAULT_THROTTLE_MS).toBe(250);
 	});
 });
