@@ -19,7 +19,7 @@ function createHarness(mode = "tui", hasUI = true) {
 		model: { id: "fixture-model", provider: "fixture", reasoning: true, contextWindow: 256_000,
 			cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 } },
 		thinkingLevel: "high",
-		sessionManager: { getCwd: () => "/fixture", getSessionName: () => "integration" },
+		sessionManager: { getCwd: () => "/fixture", getSessionName: () => "integration", getSessionFile: () => undefined },
 		getContextUsage: () => ({ tokens: 1000, contextWindow: 256_000, percent: 1 }),
 		ui: {
 			theme: { fg: (_color: string, text: string) => text },
@@ -76,7 +76,7 @@ function createHarness(mode = "tui", hasUI = true) {
 	};
 }
 
-test("manifest exposes one entry, which registers exactly the seven feature signatures", () => {
+test("manifest exposes one entry, which registers exactly the eight feature signatures", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 	expect(manifest.pi.extensions).toEqual(["extensions/index.ts"]);
 	expect(manifest.dependencies).toBeUndefined();
@@ -84,11 +84,14 @@ test("manifest exposes one entry, which registers exactly the seven feature sign
 	expect([...h.commands.keys()]).toEqual(["minimal-footer", "dm", "default-model"]);
 	expect([...h.tools.keys()]).toEqual(["set_default_model"]);
 	expect(Object.fromEntries([...h.handlers].map(([event, list]) => [event, list.length]))).toEqual({
-		session_start: 4, message_start: 1, message_end: 3, model_select: 2, session_shutdown: 5,
-		before_provider_request: 1, tool_execution_end: 1, agent_settled: 3, before_agent_start: 2,
-		message_update: 1,
+		session_start: 5, message_start: 2, message_end: 4, model_select: 2, session_shutdown: 6,
+		before_provider_request: 1, tool_execution_end: 2, tool_execution_start: 1, agent_settled: 4,
+		before_agent_start: 3, message_update: 2, agent_start: 1, turn_start: 1, session_before_compact: 1,
+		session_compact: 1, session_compact_failed: 1, ui_prompt_start: 1, ui_prompt_end: 1, agent_end: 1,
 	});
-	expect(h.handlers.has("agent_end")).toBe(false);
+	// `agent_end` is live-thinking's: elapsed deliberately ends at `agent_settled`,
+	// because an automatic retry follows `agent_end` without a new start.
+	expect(h.handlers.get("agent_end")).toHaveLength(1);
 });
 
 test("shared events compose, statuses coexist in minimal footer, and shutdown stops timers", async () => {
