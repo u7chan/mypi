@@ -1,11 +1,12 @@
 # mypi
 
 自分の常用環境の安定性と管理のしやすさを優先した、TypeScript製のPi拡張セットです。
-[pi-lab](https://github.com/u7chan/pi-lab)で登録済みの6機能を移植し、生成速度の表示を追加しています。
+[pi-lab](https://github.com/u7chan/pi-lab)で登録済みの6機能と、実行中の状態を外部へ書き出すlive-thinkingを移植し、
+生成速度の表示を追加しています。
 公開Gitリポジトリで配布し、npmには公開しません。
 
 1つのPiパッケージとして配布し、拡張のエントリーポイントも1つ（`extensions/index.ts`）にまとめています。
-起動時には7機能を常に登録し、Extensions欄にはmypi由来の項目を1つだけ表示します。
+起動時には8機能を常に登録し、Extensions欄にはmypi由来の項目を1つだけ表示します。
 機能別のON/OFF設定や設定UIはありません。他の外部拡張の表示は変更しません。
 既存の`/minimal-footer`などの操作は残しています。
 
@@ -20,6 +21,7 @@
 | git-status | origin（なければupstreamまたは最初のリモート）のリポジトリと、現在のブランチのPRをフッターにOSC 8リンクとして表示します |
 | elapsed | `before_agent_start`から`agent_settled`までの経過時間を`Working (12m 3s)`にリアルタイムで表示し、確定値を`elapsed 12m 3s`としてフッターに残します |
 | tok-rate | 生成中は最新の assistant 応答の速度を`4.6 tok/s`（差分からの推定）で表示し、指示が落ち着いたら測定できた成功メッセージの合計`usage.output`÷合計生成時間を`avg 92 tok/s`で表示します。短すぎる、またはまとめて届いた応答は生成時間を測れないため`-- tok/s`と表示します |
+| live-thinking | 実行中のphaseとthinkingの末尾を、セッションの隣の`<session>.jsonl.thinking.json`に書き出します。hwc（Herdr Web Client）などの外部クライアントが、piのプロセスにアタッチせず、TUIも読まずに実行中の状態を表示できます。phaseは`waiting` / `thinking` / `writing` / `tool-call` / `tool` / `compacting` / `waiting-user`の7段階で、1行JSONを上書きのみします。thinkingは末尾1200文字だけを500ms間隔でまとめ、phaseの変化は即時に書きます。tmpとrenameで置き換えて権限0600にし、`agent_settled`と`session_shutdown`で削除、セッションファイルのない起動では何もしません。TUI・トランスクリプト・フッターは変更しません |
 
 minimal-footerのステータスはコンテキスト使用率と同じ行に`5.0k/256k (2.0%) · elapsed 2s · 4.6 tok/s · ttl 4:31 · cached 1k`のように並べ、`elapsed` / `tok` / `cache-ttl` / `cache-reuse`の順、他の拡張はキー順でその後、`git`は最後に置きます。
 区切りは` · `で、ラベルはdim、値は通常色にします。幅が足りない場合は右寄せのモデル情報を`provider model level` → `model level` → `model` → 非表示の順に落とし、ステータスを優先します。
@@ -68,7 +70,8 @@ pi update git:github.com/u7chan/mypi@main
 
 インストールすると、常用しているPiの設定にパッケージが追加されます。`@main`はローリング配布です。
 全拡張の更新には`pi update --extensions`も使えます。
-**pi-labの同じ6拡張とは同時にロードしないでください**。コマンド・ツール・表示が重複します。
+**pi-labの同じ6拡張やlive-thinkingのPoCとは同時にロードしないでください**。コマンド・ツール・表示が重複します。
+live-thinkingのPoCを一時的に`extensions`で読み込んでいる場合は、同じsidecarへ二重に書くため、mypi側を入れる前に外してください。
 常用環境を切り替える前に、pi-labの対象拡張を外す手順を確認してください。
 
 ## 開発・検証
@@ -106,7 +109,7 @@ pi --no-extensions --no-session --verbose -e "$PWD"
 ### 構成
 
 ```text
-extensions/index.ts       # 唯一のエントリーポイント。7つの登録関数を呼ぶだけ
+extensions/index.ts       # 唯一のエントリーポイント。8つの登録関数を呼ぶだけ
 src/<機能>/extension.ts   # Piアダプター・登録処理・機能別の状態
 src/<機能>/core.ts        # 機能別のコア処理
 tests/<機能>.test.ts      # 移植したテストと回帰テスト
@@ -149,6 +152,17 @@ scripts/smoke-*.mjs        # 実際のPiでの隔離検証
   `usage.output`がない応答は表示だけ推定し、avgには加算しません。失敗・中断した応答も除外します。
 - UIのないprint/jsonモードでは表示を変更しません。RPCでは従来どおりstatus/dialogを利用しますが、
   カスタムフッターとworkingメッセージの端末表示はありません。
+- live-thinkingは観測専用で、セッションを止めません。sidecarの書き込みに失敗しても（ディスク不足、
+  権限、ディレクトリの消失など）エラーを握りつぶし、そのまま実行を続けます。
+- 自動リトライのbackoffには拡張イベントがないため、その待ち時間は`waiting`として見えます。
+  並列ツールは1つの`tool`にまとめ、直近に開始したツール名と実行数だけを出すので、個々のツールの
+  進捗は分かりません。
+- `tool-call`は引数の生成中だけ続く短命なphaseです。約1秒間隔で読む側では取りこぼすことがあります。
+- `thinking`はプロバイダーがreasoningを流したときだけ現れます。reasoningを流さないモデルでは
+  `waiting` → `tool-call` → `writing`のように進み、`text`は付きません。
+- 強制終了などで残ったsidecarは、次回の`session_start`で自セッション分だけ削除します。
+  `--no-session`ではセッションファイルがないため、sidecarを作りません。
+  残骸の掃除は自セッションのパスに限られ、他のセッションのsidecarには触れません。
 - 設定の更新キューは、同じPiプロセス内で更新を直列化するものです。
   他のプロセスや手作業での編集による同時更新を、ファイルロックで排他制御するものではありません。
 - エントリーポイントやimportのエラーは全機能のロードに影響します。
