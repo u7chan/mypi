@@ -21,7 +21,7 @@
 | git-status | origin（なければupstreamまたは最初のリモート）のリポジトリと、現在のブランチのPRをフッターにOSC 8リンクとして表示します |
 | elapsed | `before_agent_start`から`agent_settled`までの経過時間を`Working (12m 3s)`にリアルタイムで表示し、確定値を`elapsed 12m 3s`としてフッターに残します |
 | tok-rate | 生成中は最新の assistant 応答の速度を`4.6 tok/s`（差分からの推定）で表示し、指示が落ち着いたら測定できた成功メッセージの合計`usage.output`÷合計生成時間を`avg 92 tok/s`で表示します。短すぎる、またはまとめて届いた応答は生成時間を測れないため`-- tok/s`と表示します |
-| live-thinking | 実行中のphaseとthinkingの末尾を、セッションの隣の`<session>.jsonl.thinking.json`に書き出します。hwc（Herdr Web Client）などの外部クライアントが、piのプロセスにアタッチせず、TUIも読まずに実行中の状態を表示できます。phaseは`waiting` / `thinking` / `writing` / `tool-call` / `tool` / `compacting` / `waiting-user`の7段階で、1行JSONを上書きのみします。thinkingは末尾1200文字だけを500ms間隔でまとめ、phaseの変化は即時に書きます。tmpとrenameで置き換えて権限0600にし、`agent_settled`と`session_shutdown`で削除、セッションファイルのない起動では何もしません。TUI・トランスクリプト・フッターは変更しません |
+| live-thinking | 実行中のphase・thinkingの末尾・生成中の速度を、セッションの隣の`<session>.jsonl.thinking.json`に書き出します。hwc（Herdr Web Client）などの外部クライアントが、piのプロセスにアタッチせず、TUIも読まずに実行中の状態を表示できます。phaseは`waiting` / `thinking` / `writing` / `tool-call` / `tool` / `compacting` / `waiting-user`の7段階で、1行JSONを上書きのみします。`tokPerSecond`はtok-rateと同じsamplerで測った現在のassistant応答の推定速度（tok/s、丸めなし）で、`thinking` / `writing` / `tool-call`のときだけ入り、`message_end`で消えます。thinkingは末尾1200文字だけを500ms間隔でまとめ、phaseの変化は即時に書きます。tmpとrenameで置き換えて権限0600にし、`agent_settled`と`session_shutdown`で削除、セッションファイルのない起動では何もしません。TUI・トランスクリプト・フッターは変更しません |
 
 minimal-footerのステータスはコンテキスト使用率と同じ行に`5.0k/256k (2.0%) · elapsed 2s · 4.6 tok/s · ttl 4:31 · cached 1k`のように並べ、`elapsed` / `tok` / `cache-ttl` / `cache-reuse`の順、他の拡張はキー順でその後、`git`は最後に置きます。
 区切りは` · `で、ラベルはdim、値は通常色にします。幅が足りない場合は右寄せのモデル情報を`provider model level` → `model level` → `model` → 非表示の順に落とし、ステータスを優先します。
@@ -112,6 +112,7 @@ pi --no-extensions --no-session --verbose -e "$PWD"
 extensions/index.ts       # 唯一のエントリーポイント。8つの登録関数を呼ぶだけ
 src/<機能>/extension.ts   # Piアダプター・登録処理・機能別の状態
 src/<機能>/core.ts        # 機能別のコア処理
+src/tok-rate/sampler.ts   # tok-rateとlive-thinkingが共有する生成速度の測定
 tests/<機能>.test.ts      # 移植したテストと回帰テスト
 tests/entry.test.ts        # 二重登録・複数ハンドラー・状態分離・UIモード・終了処理
 scripts/smoke-*.mjs        # 実際のPiでの隔離検証
@@ -163,6 +164,14 @@ scripts/smoke-*.mjs        # 実際のPiでの隔離検証
 - 強制終了などで残ったsidecarは、次回の`session_start`で自セッション分だけ削除します。
   `--no-session`ではセッションファイルがないため、sidecarを作りません。
   残骸の掃除は自セッションのパスに限られ、他のセッションのsidecarには触れません。
+- live-thinkingの`tokPerSecond`は、TUIのtok-rateと同じsamplerで測った現在のassistant応答の
+  推定速度です。文字数推定（ASCII 0.25、それ以外1トークン）に、先行する`usage.output`とのmaxと、
+  reasoningをストリームしていない場合の減算を適用します。最初の差分から400ms以上かつ受信時刻が
+  8個以上あるときだけ入り、短い・まとめて届いた応答では省略します（`--`や0は入れません）。
+  既存の500ms flushに乗せ、最後の差分時点の値に更新するので、flush時刻で分母は伸びません。
+  `message_end`で消し、`assistantMessageStart` / `agentStart` / `turnStart`でリセットします。
+  `waiting` / `tool` / `compacting` / `waiting-user`では出しません。
+  履歴・確定値・avgは持たず、値は100000を上限にします。
 - 設定の更新キューは、同じPiプロセス内で更新を直列化するものです。
   他のプロセスや手作業での編集による同時更新を、ファイルロックで排他制御するものではありません。
 - エントリーポイントやimportのエラーは全機能のロードに影響します。

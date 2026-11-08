@@ -9,10 +9,16 @@
  *
  *     <session>.jsonl.thinking.json
  *
- * The file is replaced, never appended.  It holds the current phase plus the
- * tail of the current thinking block, and it is removed when the instruction
- * settles.  Keeping history here is out of scope on purpose: the conversation
- * truth stays in the session JSONL.
+ * The file is replaced, never appended.  It holds the current phase, the tail
+ * of the current thinking block and, while the model is producing output, the
+ * live generation speed.  It is removed when the instruction settles.  Keeping
+ * history here is out of scope on purpose: the conversation truth stays in the
+ * session JSONL.
+ *
+ * `tokPerSecond` reuses the TUI footer's measurement (`tok-rate`'s sampler) so
+ * a reader sees the same number the user sees.  It is an estimate from the
+ * streamed deltas, it is only published in the generating phases, and it is
+ * dropped at `message_end`: no settled value, no average, no history.
  *
  * Phases are derived from the provider stream and the tool lifecycle:
  *
@@ -33,6 +39,8 @@
  * without a terminal, real timers or a filesystem.
  */
 
+import { createMessageSampler, type AssistantMessageLike } from "../tok-rate/sampler.ts";
+
 export const FORMAT_VERSION = 1;
 
 /** Readers poll at about 1s; writing faster than that only burns I/O. */
@@ -40,6 +48,13 @@ export const DEFAULT_THROTTLE_MS = 500;
 
 /** hwc shows two lines; this keeps the file small while leaving slack. */
 export const MAX_TEXT_CHARS = 1_200;
+
+/**
+ * Ceiling for the published rate.  A faster stream is a measurement artifact
+ * (a coalesced burst or a huge tool-call argument), not generation speed.
+ * Readers clamp further; the writer never emits more than this.
+ */
+export const MAX_TOK_PER_SECOND = 100_000;
 
 export const LIVE_PHASES = [
 	"waiting",
@@ -60,6 +75,8 @@ export type LiveThinkingState = {
 	/** Most recently started running tool, when more than one runs in parallel. */
 	tool: string | null;
 	tools: number;
+	/** Live generation speed, only meaningful in the generating phases. */
+	tokPerSecond: number | null;
 };
 
 export type LiveThinkingFile = {
@@ -69,6 +86,8 @@ export type LiveThinkingFile = {
 	text?: string;
 	tool?: string;
 	tools?: number;
+	/** Estimated tok/s of the current message; omitted when it cannot be timed. */
+	tokPerSecond?: number;
 };
 
 /** Structural subset of Pi's `AssistantMessageEvent`. */
@@ -76,6 +95,8 @@ export type AssistantStreamEvent = {
 	type: string;
 	delta?: string;
 	content?: string;
+	/** Carries `usage.output` / `usage.reasoning` while the stream runs. */
+	partial?: AssistantMessageLike;
 };
 
 export type LiveThinkingSink = {
@@ -145,7 +166,24 @@ export function sidecarDocument(state: LiveThinkingState, at: number): LiveThink
 		if (state.tool !== null) document.tool = state.tool;
 		if (state.tools > 0) document.tools = state.tools;
 	}
+	const rate = carriesTokenRate(state.phase) ? publishableTokPerSecond(state.tokPerSecond) : null;
+	if (rate !== null) document.tokPerSecond = rate;
 	return document;
+}
+
+/**
+ * The sidecar carries a rate only while the model produces output.  A run that
+ * is waiting, running a tool, compacting or blocked on a dialog must not show
+ * the speed of the previous response.
+ */
+export function carriesTokenRate(phase: LivePhase): boolean {
+	return phase === "thinking" || phase === "writing" || phase === "tool-call";
+}
+
+/** Clamp to the published ceiling and reject values that are not a speed. */
+export function publishableTokPerSecond(value: number | null): number | null {
+	if (value === null || !Number.isFinite(value) || value <= 0) return null;
+	return Math.min(value, MAX_TOK_PER_SECOND);
 }
 
 export function serializeLiveThinking(state: LiveThinkingState, at: number): string {
@@ -181,6 +219,19 @@ export function parseLiveThinking(body: string): LiveThinkingFile | null {
 		if (typeof record.tool === "string" && record.tool !== "") document.tool = record.tool;
 		if (typeof record.tools === "number" && Number.isFinite(record.tools)) document.tools = record.tools;
 	}
+	// A missing field is the normal case for untimed responses; an invalid one
+	// is dropped rather than trusted, and a rate outside the generating phases
+	// describes a different moment than the phase does.
+	const rate = record.tokPerSecond;
+	if (
+		carriesTokenRate(document.phase) &&
+		typeof rate === "number" &&
+		Number.isFinite(rate) &&
+		rate > 0 &&
+		rate <= MAX_TOK_PER_SECOND
+	) {
+		document.tokPerSecond = rate;
+	}
 	return document;
 }
 
@@ -192,11 +243,14 @@ export function createLiveThinkingController(
 	const scheduler = options.scheduler ?? defaultScheduler;
 	const throttleMs = options.throttleMs ?? DEFAULT_THROTTLE_MS;
 	const textLimit = options.textLimit ?? MAX_TEXT_CHARS;
+	// Same measurement as the TUI footer; it is driven with our injected clock.
+	const sampler = createMessageSampler();
 
 	let path: string | null = null;
 	let running = false;
 	let activity: "thinking" | "writing" | "tool-call" | null = null;
 	let thinking = "";
+	let tokPerSecond: number | null = null;
 	let tools = new Map<string, string>();
 	let compacting = false;
 	let uiPrompts = 0;
@@ -221,6 +275,7 @@ export function createLiveThinkingController(
 			text: phase === "thinking" ? tailText(thinking, textLimit) : "",
 			tool: phase === "tool" ? (names.at(-1) ?? null) : null,
 			tools: phase === "tool" ? tools.size : 0,
+			tokPerSecond: carriesTokenRate(phase) ? publishableTokPerSecond(tokPerSecond) : null,
 		};
 	};
 
@@ -247,7 +302,7 @@ export function createLiveThinkingController(
 		cancelTimer();
 		if (path === null) return;
 		const state = currentState();
-		const key = `${state.phase}\u0000${state.text}\u0000${state.tool ?? ""}\u0000${state.tools}`;
+		const key = `${state.phase}\u0000${state.text}\u0000${state.tool ?? ""}\u0000${state.tools}\u0000${state.tokPerSecond ?? ""}`;
 		// Nothing changed since the last write: keep the old `at` instead of
 		// touching the file, so a long tool run does not look like fresh activity.
 		if (key === lastKey) return;
@@ -284,10 +339,17 @@ export function createLiveThinkingController(
 		}
 	};
 
-	const resetRun = () => {
-		cancelTimer();
+	/** A new turn or message must not carry the previous response's speed. */
+	const resetActivity = () => {
 		activity = null;
 		thinking = "";
+		tokPerSecond = null;
+		sampler.reset();
+	};
+
+	const resetRun = () => {
+		cancelTimer();
+		resetActivity();
 		tools = new Map();
 		uiPrompts = 0;
 	};
@@ -315,22 +377,26 @@ export function createLiveThinkingController(
 		},
 		agentStart() {
 			running = true;
-			activity = null;
-			thinking = "";
+			resetActivity();
 			uiPrompts = 0;
 			touch();
 		},
 		turnStart() {
-			activity = null;
-			thinking = "";
+			resetActivity();
 			touch();
 		},
 		assistantMessageStart() {
-			activity = null;
-			thinking = "";
+			resetActivity();
 			touch();
 		},
 		assistantEvent(event) {
+			const sample = sampler.sample(event, now());
+			// The published rate is the one at the last delta, not at the flush:
+			// letting the denominator grow while the file waits would disagree
+			// with the footer's last live value.
+			if (sample.delta && sample.measurable && sample.tokPerSecond !== null) {
+				tokPerSecond = sample.tokPerSecond;
+			}
 			switch (event.type) {
 				case "thinking_start":
 					activity = "thinking";
@@ -366,8 +432,7 @@ export function createLiveThinkingController(
 			touch();
 		},
 		assistantMessageEnd() {
-			activity = null;
-			thinking = "";
+			resetActivity();
 			touch();
 		},
 		toolStart(event) {

@@ -11,13 +11,17 @@ import {
 // same format without loading a Pi runtime.  The extension itself only adapts
 // them to Pi lifecycle events.
 export {
+	carriesTokenRate,
 	createLiveThinkingController,
 	DEFAULT_THROTTLE_MS,
 	FORMAT_VERSION,
 	LIVE_PHASES,
 	MAX_TEXT_CHARS,
+	MAX_TOK_PER_SECOND,
 	parseLiveThinking,
+	publishableTokPerSecond,
 	serializeLiveThinking,
+	sidecarDocument,
 	sidecarPath,
 	tailText,
 } from "./core.ts";
@@ -63,10 +67,13 @@ function sessionFileOf(ctx: ExtensionContext): string | null {
 }
 
 /**
- * Publishes the live phase and the tail of the current thinking block to
- * `<session>.jsonl.thinking.json` for external readers such as hwc.
+ * Publishes the live phase, the tail of the current thinking block and the
+ * live generation speed to `<session>.jsonl.thinking.json` for external
+ * readers such as hwc.
  *
- * It does not add anything to the transcript, the footer or the transcript
+ * `tokPerSecond` is the same estimate the TUI footer shows (`tok-rate`), it is
+ * published only in the generating phases and dropped at `message_end`.  It
+ * does not add anything to the transcript, the footer or the transcript
  * rendering, and it does not change Pi's thinking-block visibility.  The
  * sidecar is replaced (never appended) and removed at `agent_settled` or
  * `session_shutdown`.
