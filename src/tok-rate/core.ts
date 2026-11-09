@@ -9,56 +9,34 @@
  * `avg N tok/s`: successful messages' combined output divided by their
  * combined generation time, so tool waits and other idle time are excluded.
  *
- * Wall-clock time between deltas is only a proxy for generation time.  Pi
- * emits `message_start` after the response headers, gateways coalesce
- * chunks, and a short reply often arrives as one or two flushes a few
- * milliseconds apart.  Dividing its tokens by that window produces rates in
- * the thousands.  A response is therefore only rated when the stream lasted
- * at least `minSpanMs` and produced at least `minArrivals` distinct arrival
- * instants; otherwise the footer shows `-- tok/s` and the message is left out
- * of the average.
+ * Wall-clock time between deltas is only a proxy for generation time, and a
+ * short or coalesced reply has no measurable window.  A response is therefore
+ * only rated when the stream lasted at least `minSpanMs` and produced at least
+ * `minArrivals` distinct arrival instants; otherwise the footer shows
+ * `-- tok/s` and the message is left out of the average.
  *
- * Live numbers are estimates.  Most providers report usage only on the final
- * chunk, so the running rate divides a character-based token estimate by the
- * time since the first delta.  ASCII counts as a quarter token, everything
- * else (CJK, emoji) as one, which keeps Japanese output from reading several
- * times faster than it is.  As soon as `partial.usage.output` appears it wins.
- * Providers that report reasoning tokens without streaming them would put
- * tokens into the numerator whose generation never reached the clock, so
- * `usage.reasoning` is subtracted when no `thinking_delta` was seen.
+ * The measurement itself - the character estimate, the provider usage
+ * handling and the gates - lives in `sampler.ts`, shared with `live-thinking`,
+ * so the footer and the activity sidecar always report the same live rate.
  *
  * The clock and the throttle are injectable so the state machine can be driven
  * without a terminal or real timers.
  */
 
+import {
+	createMessageSampler,
+	type AssistantDeltaLike,
+	type AssistantMessageLike,
+} from "./sampler.ts";
+
+// Keep the historical module surface: readers and tests import these here.
+export { DEFAULT_MIN_ARRIVALS, DEFAULT_MIN_SPAN_MS, estimateTokens } from "./sampler.ts";
+export type { AssistantDeltaLike, AssistantMessageLike, AssistantUsageLike } from "./sampler.ts";
+
 export const STATUS_KEY = "tok";
 
 /** Rendering on every delta would repaint the footer per token. */
 export const DEFAULT_THROTTLE_MS = 250;
-
-/** Too-short spans divide by noise; wait for a measurable window. */
-export const DEFAULT_MIN_SPAN_MS = 400;
-
-/**
- * Bursts that arrive within the same millisecond are one delivery event, not
- * independent samples.  A rate needs enough of them to be more than jitter.
- */
-export const DEFAULT_MIN_ARRIVALS = 8;
-
-/**
- * Rough output-token estimate for a streamed delta.
- *
- * ASCII text averages about four characters per token; CJK and emoji are
- * usually one token per character (or more), so they count as a full token.
- */
-export function estimateTokens(text: string): number {
-	let tokens = 0;
-	for (const char of text) {
-		const codePoint = char.codePointAt(0) ?? 0;
-		tokens += codePoint > 0x7f ? 1 : 0.25;
-	}
-	return tokens;
-}
 
 /** `158`, `42.3`: whole numbers once the rate is high enough to not need decimals. */
 export function formatTokPerSecond(tokensPerSecond: number): string {
@@ -96,25 +74,6 @@ export interface TokRateContext {
 	ui: TokRateUi;
 }
 
-export interface AssistantUsageLike {
-	output?: number;
-	/** Subset of `output`; reported only by providers that break it out. */
-	reasoning?: number;
-}
-
-export interface AssistantMessageLike {
-	role?: string;
-	usage?: AssistantUsageLike;
-	stopReason?: string;
-}
-
-/** The parts of Pi's `AssistantMessageEvent` the controller reads. */
-export interface AssistantDeltaLike {
-	type: string;
-	delta?: string;
-	partial?: AssistantMessageLike;
-}
-
 export interface TokRateControllerOptions {
 	now?: () => number;
 	throttleMs?: number;
@@ -137,42 +96,8 @@ export interface TokRateController {
 	sessionShutdown(ctx: TokRateContext): void;
 }
 
-function deltaText(event: AssistantDeltaLike): string | undefined {
-	if (event.type !== "text_delta" && event.type !== "thinking_delta" && event.type !== "toolcall_delta") {
-		return undefined;
-	}
-	return event.delta;
-}
-
-function outputTokens(usage: AssistantUsageLike | undefined): number | undefined {
-	const output = usage?.output;
-	if (typeof output !== "number" || !Number.isFinite(output) || output <= 0) return undefined;
-	return output;
-}
-
-function reasoningTokens(usage: AssistantUsageLike | undefined): number {
-	const reasoning = usage?.reasoning;
-	if (typeof reasoning !== "number" || !Number.isFinite(reasoning) || reasoning <= 0) return 0;
-	return reasoning;
-}
-
 /**
- * Output tokens the stream actually carried.
- *
- * `usage.output` includes reasoning.  When the provider streams thinking the
- * first `thinking_delta` opens the window, so those tokens are timed.  When it
- * only reports them, the clock starts at the first visible delta and the
- * reasoning tokens must come out of the numerator.
- */
-function visibleOutput(usage: AssistantUsageLike | undefined, reasoningStreamed: boolean): number | undefined {
-	const output = outputTokens(usage);
-	if (output === undefined) return undefined;
-	if (reasoningStreamed) return output;
-	return Math.max(0, output - reasoningTokens(usage));
-}
-
-/**
- * One assistant message in flight.
+ * One assistant message in flight, published in the footer.
  *
  * `messageStart` opens the measurement (Pi emits it for the provider's `start`
  * event, not as a `message_update`), deltas accumulate the live estimate, and
@@ -188,16 +113,11 @@ function visibleOutput(usage: AssistantUsageLike | undefined, reasoningStreamed:
 export function createTokRateController(options: TokRateControllerOptions = {}): TokRateController {
 	const now = options.now ?? (() => Date.now());
 	const throttleMs = options.throttleMs ?? DEFAULT_THROTTLE_MS;
-	const minSpanMs = options.minSpanMs ?? DEFAULT_MIN_SPAN_MS;
-	const minArrivals = options.minArrivals ?? DEFAULT_MIN_ARRIVALS;
+	const sampler = createMessageSampler({
+		minSpanMs: options.minSpanMs,
+		minArrivals: options.minArrivals,
+	});
 
-	let active = false;
-	let firstDeltaAt: number | undefined;
-	let lastDeltaAt: number | undefined;
-	let arrivalSlots = 0;
-	let thinkingDeltas = 0;
-	let streamedTokens = 0;
-	let reportedOutput: number | undefined;
 	let lastShownAt: number | undefined;
 
 	// Per-instruction totals for the settled average.  Only successful,
@@ -211,28 +131,14 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 	};
 
 	const forgetMessage = () => {
-		active = false;
-		firstDeltaAt = undefined;
-		lastDeltaAt = undefined;
-		arrivalSlots = 0;
-		thinkingDeltas = 0;
-		streamedTokens = 0;
-		reportedOutput = undefined;
+		sampler.reset();
 		lastShownAt = undefined;
-	};
-
-	const begin = () => {
-		forgetMessage();
-		active = true;
 	};
 
 	const show = (tokens: number, spanMs: number, ctx: TokRateContext) => {
 		if (tokens <= 0 || spanMs <= 0) return;
 		ctx.ui.setStatus(STATUS_KEY, formatThemedTokRateStatus((tokens * 1000) / spanMs, ctx.ui.theme));
 	};
-
-	/** Both the live update and the final value need a window worth dividing by. */
-	const measurable = (spanMs: number) => spanMs >= minSpanMs && arrivalSlots >= minArrivals;
 
 	return {
 		reset(ctx) {
@@ -245,54 +151,33 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 
 		messageStart(message, ctx) {
 			if (!ctx.hasUI || message.role !== "assistant") return;
-			begin();
+			sampler.begin();
+			lastShownAt = undefined;
 			clear(ctx);
 		},
 
 		messageUpdate(event, ctx) {
 			if (!ctx.hasUI) return;
 			if (event.partial?.role !== undefined && event.partial.role !== "assistant") return;
-			if (!active) begin();
 
 			const at = now();
-			const delta = deltaText(event);
-			if (delta !== undefined && delta.length > 0) {
-				firstDeltaAt ??= at;
-				if (event.type === "thinking_delta") thinkingDeltas += 1;
-				if (at !== lastDeltaAt) {
-					arrivalSlots += 1;
-					lastDeltaAt = at;
-				}
-				streamedTokens += estimateTokens(delta);
-			}
-
-			const reported = visibleOutput(event.partial?.usage, thinkingDeltas > 0);
-			if (reported !== undefined && reported > (reportedOutput ?? 0)) reportedOutput = reported;
-			if (firstDeltaAt === undefined) return;
-
-			const spanMs = at - firstDeltaAt;
-			if (!measurable(spanMs)) return;
+			const sample = sampler.sample(event, at);
+			if (sample.spanMs === undefined || !sample.measurable) return;
 			if (lastShownAt !== undefined && at - lastShownAt < throttleMs) return;
 
 			lastShownAt = at;
-			// Some providers (Anthropic is one) report a fixed `output_tokens`
-			// from the first chunk and only replace it at the end.  A smaller
-			// reported value is that stale snapshot, not the current total, so
-			// keep the running estimate ahead of it until `message_end`.
-			show(Math.max(reportedOutput ?? 0, streamedTokens), spanMs, ctx);
+			show(sample.tokens, sample.spanMs, ctx);
 		},
 
 		messageEnd(message, ctx) {
-			if (!ctx.hasUI || message.role !== "assistant" || !active) return;
+			if (!ctx.hasUI || message.role !== "assistant") return;
 
 			const finishedAt = now();
-			const confirmedTokens = visibleOutput(message.usage, thinkingDeltas > 0);
-			const tokens = confirmedTokens ?? reportedOutput ?? streamedTokens;
-			const generationSpan = firstDeltaAt !== undefined ? finishedAt - firstDeltaAt : undefined;
-			// Read the window before the per-message state is cleared.
-			const timed = generationSpan !== undefined && measurable(generationSpan);
-
+			const sample = sampler.finish(message, finishedAt);
+			if (sample === null) return;
 			forgetMessage();
+
+			const { tokens, confirmedTokens, spanMs, measurable } = sample;
 
 			// A failed or aborted message has no meaningful rate; leaving the
 			// previous one on screen would describe the wrong response.
@@ -303,7 +188,7 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 
 			// A one-chunk reply, or a burst that shares a few milliseconds, has
 			// no generation window; any rate from it would be delivery noise.
-			if (!timed || generationSpan === undefined) {
+			if (!measurable || spanMs === undefined) {
 				ctx.ui.setStatus(STATUS_KEY, formatThemedMissingTokRateStatus(ctx.ui.theme));
 				return;
 			}
@@ -313,10 +198,10 @@ export function createTokRateController(options: TokRateControllerOptions = {}):
 			// display; averaging them would mix estimates into a usage total.
 			if (confirmedTokens !== undefined) {
 				runOutputTokens += confirmedTokens;
-				runGenerationMs += generationSpan;
+				runGenerationMs += spanMs;
 				runMessages += 1;
 			}
-			show(tokens, generationSpan, ctx);
+			show(tokens, spanMs, ctx);
 		},
 
 		agentSettled(ctx) {

@@ -8,8 +8,10 @@ import liveThinkingExtension, {
 	FORMAT_VERSION,
 	LIVE_PHASES,
 	MAX_TEXT_CHARS,
+	MAX_TOK_PER_SECOND,
 	parseLiveThinking,
 	serializeLiveThinking,
+	sidecarDocument,
 	sidecarPath,
 	tailText,
 } from "../src/live-thinking/extension.ts";
@@ -78,6 +80,27 @@ function setup() {
 	return { ...fakeSink, ...clock, controller };
 }
 
+const GENERATION_PHASES = [
+	{ start: "thinking_start", delta: "thinking_delta", phase: "thinking" },
+	{ start: "text_start", delta: "text_delta", phase: "writing" },
+	{ start: "toolcall_start", delta: "toolcall_delta", phase: "tool-call" },
+] as const;
+
+/**
+ * Nine four-character deltas 50ms apart: nine estimated tokens over 400ms, so
+ * the last one passes both gates of the shared sampler.
+ */
+function emitTimedDeltas(
+	controller: ReturnType<typeof createLiveThinkingController>,
+	clock: ReturnType<typeof createClock>,
+	type: (typeof GENERATION_PHASES)[number]["delta"],
+) {
+	for (let index = 0; index < 9; index++) {
+		if (index > 0) clock.advance(50);
+		controller.assistantEvent({ type, delta: "aaaa" });
+	}
+}
+
 describe("sidecar format", () => {
 	test("builds the path next to the session file", () => {
 		expect(sidecarPath(SESSION)).toBe(`${SESSION}.thinking.json`);
@@ -91,22 +114,28 @@ describe("sidecar format", () => {
 
 	test("writing rules: text only while thinking, tool fields only while a tool runs", () => {
 		const thinking = serializeLiveThinking(
-			{ phase: "thinking", text: "reason", tool: null, tools: 0 },
+			{ phase: "thinking", text: "reason", tool: null, tools: 0, tokPerSecond: null },
 			1,
 		);
 		expect(JSON.parse(thinking)).toEqual({ v: FORMAT_VERSION, at: 1, phase: "thinking", text: "reason" });
-		const tool = serializeLiveThinking({ phase: "tool", text: "", tool: "bash", tools: 2 }, 2);
+		const tool = serializeLiveThinking(
+			{ phase: "tool", text: "", tool: "bash", tools: 2, tokPerSecond: null },
+			2,
+		);
 		expect(JSON.parse(tool)).toEqual({ v: FORMAT_VERSION, at: 2, phase: "tool", tool: "bash", tools: 2 });
-		const writing = serializeLiveThinking({ phase: "writing", text: "", tool: null, tools: 0 }, 3);
+		const writing = serializeLiveThinking(
+			{ phase: "writing", text: "", tool: null, tools: 0, tokPerSecond: null },
+			3,
+		);
 		expect(JSON.parse(writing)).toEqual({ v: FORMAT_VERSION, at: 3, phase: "writing" });
 	});
 
 	test("a reader rejects unknown versions, unknown phases and misplaced fields", () => {
-		expect(parseLiveThinking(serializeLiveThinking({ phase: "writing", text: "x", tool: null, tools: 0 }, 1))).toEqual({
-			v: FORMAT_VERSION,
-			at: 1,
-			phase: "writing",
-		});
+		expect(
+			parseLiveThinking(
+				serializeLiveThinking({ phase: "writing", text: "x", tool: null, tools: 0, tokPerSecond: null }, 1),
+			),
+		).toEqual({ v: FORMAT_VERSION, at: 1, phase: "writing" });
 		expect(parseLiveThinking(JSON.stringify({ v: 2, at: 1, phase: "thinking" }))).toBeNull();
 		expect(parseLiveThinking(JSON.stringify({ v: 1, at: 1, phase: "nope" }))).toBeNull();
 		expect(parseLiveThinking(JSON.stringify({ v: 1, at: "now", phase: "thinking" }))).toBeNull();
@@ -129,6 +158,53 @@ describe("sidecar format", () => {
 			"waiting-user",
 		]);
 		expect(MAX_TEXT_CHARS).toBeGreaterThan(0);
+	});
+
+	test("a reader accepts a rate only in the generating phases and within range", () => {
+		const writing = { v: FORMAT_VERSION, at: 1, phase: "writing" as const };
+		expect(parseLiveThinking(JSON.stringify({ ...writing, tokPerSecond: 42.5 }))).toEqual({
+			...writing,
+			tokPerSecond: 42.5,
+		});
+		// A sidecar from an older writer has no field at all.
+		expect(parseLiveThinking(JSON.stringify(writing))).toEqual(writing);
+		// The published ceiling itself is still a usable number.
+		expect(parseLiveThinking(JSON.stringify({ ...writing, tokPerSecond: MAX_TOK_PER_SECOND }))).toEqual({
+			...writing,
+			tokPerSecond: MAX_TOK_PER_SECOND,
+		});
+
+		// A rate on a non-generating phase describes a different moment.
+		for (const phase of ["waiting", "tool", "compacting", "waiting-user"] as const) {
+			expect(parseLiveThinking(JSON.stringify({ v: 1, at: 1, phase, tokPerSecond: 42.5 }))).toEqual({
+				v: FORMAT_VERSION,
+				at: 1,
+				phase,
+			});
+		}
+
+		// NaN and the infinities serialize as null; a string is not a number.
+		for (const value of [
+			Number.NaN,
+			Number.POSITIVE_INFINITY,
+			Number.NEGATIVE_INFINITY,
+			-1,
+			0,
+			MAX_TOK_PER_SECOND + 1,
+			"42",
+			null,
+		]) {
+			expect(parseLiveThinking(JSON.stringify({ ...writing, tokPerSecond: value }))).toEqual(writing);
+		}
+	});
+
+	test("the writer clamps the rate and never emits an invalid one", () => {
+		const base = { phase: "writing" as const, text: "", tool: null, tools: 0 };
+		expect(sidecarDocument({ ...base, tokPerSecond: 200_000 }, 1).tokPerSecond).toBe(MAX_TOK_PER_SECOND);
+		expect(sidecarDocument({ ...base, tokPerSecond: 42.5 }, 1).tokPerSecond).toBe(42.5);
+		for (const value of [null, Number.NaN, Number.POSITIVE_INFINITY, -1, 0]) {
+			expect(sidecarDocument({ ...base, tokPerSecond: value }, 1).tokPerSecond).toBeUndefined();
+		}
 	});
 });
 
@@ -248,6 +324,121 @@ describe("phase state machine", () => {
 		expect(fake.last().phase).toBe("waiting-user");
 		fake.controller.uiPromptEnd();
 		expect(fake.last().phase).toBe("waiting");
+	});
+});
+
+describe("live token rate", () => {
+	test("publishes the rate while thinking, writing or streaming a tool call", () => {
+		for (const item of GENERATION_PHASES) {
+			const fake = setup();
+			fake.controller.agentStart();
+			fake.advance(600);
+			fake.controller.assistantEvent({ type: item.start });
+			emitTimedDeltas(fake.controller, fake, item.delta);
+			expect(fake.controller.state()).toMatchObject({ phase: item.phase, tokPerSecond: 22.5 });
+
+			// The write waits for the throttle and carries the value from the
+			// last delta, not one diluted by the flush instant.
+			fake.advance(100);
+			expect(fake.last()).toMatchObject({ phase: item.phase, tokPerSecond: 22.5 });
+		}
+	});
+
+	test("keeps the field out of the non-generating phases", () => {
+		for (const phase of ["waiting", "tool", "compacting", "waiting-user"] as const) {
+			const document = sidecarDocument({ phase, text: "", tool: "bash", tools: 1, tokPerSecond: 42 }, 1);
+			expect(document.tokPerSecond).toBeUndefined();
+		}
+
+		// Compaction outranks the stream: the rate disappears while it runs and
+		// returns with the phase, because it belongs to the same message.
+		const fake = setup();
+		fake.controller.agentStart();
+		fake.advance(600);
+		fake.controller.assistantEvent({ type: "text_start" });
+		emitTimedDeltas(fake.controller, fake, "text_delta");
+		fake.advance(100);
+		expect(fake.last().tokPerSecond).toBe(22.5);
+
+		fake.controller.compactionStart();
+		expect(fake.last()).toEqual({ v: 1, at: 1100, phase: "compacting" });
+		fake.controller.compactionEnd();
+		expect(fake.last()).toMatchObject({ phase: "writing", tokPerSecond: 22.5 });
+
+		// A tool batch follows `message_end`, which already cleared the rate.
+		fake.controller.assistantMessageEnd();
+		fake.controller.toolStart({ toolCallId: "c1", toolName: "bash" });
+		expect(fake.last()).toEqual({ v: 1, at: 1100, phase: "tool", tool: "bash", tools: 1 });
+	});
+
+	test("does not rate short or coalesced responses", () => {
+		// Nine arrivals, but only 296ms of observable window.
+		const short = setup();
+		short.controller.agentStart();
+		short.advance(600);
+		short.controller.assistantEvent({ type: "text_start" });
+		for (let index = 0; index < 9; index++) {
+			if (index > 0) short.advance(37);
+			short.controller.assistantEvent({ type: "text_delta", delta: "a".repeat(40) });
+		}
+		short.advance(600);
+		expect(short.last().phase).toBe("writing");
+		expect(short.last().tokPerSecond).toBeUndefined();
+
+		// A burst that shares a millisecond is one delivery event, not nine.
+		const burst = setup();
+		burst.controller.agentStart();
+		burst.advance(600);
+		burst.controller.assistantEvent({ type: "text_start" });
+		for (let index = 0; index < 9; index++) {
+			burst.controller.assistantEvent({ type: "text_delta", delta: "a".repeat(40) });
+		}
+		burst.advance(500);
+		burst.controller.assistantEvent({ type: "text_delta", delta: "a".repeat(40) });
+		burst.advance(600);
+		expect(burst.last().phase).toBe("writing");
+		expect(burst.last().tokPerSecond).toBeUndefined();
+	});
+
+	test("updates on the 500ms flush from the last delta and drops the rate at message_end", () => {
+		const fake = setup();
+		fake.controller.agentStart();
+		fake.advance(600);
+		fake.controller.assistantEvent({ type: "text_start" });
+		emitTimedDeltas(fake.controller, fake, "text_delta");
+		fake.advance(100);
+		expect(fake.last().tokPerSecond).toBe(22.5);
+
+		// Three more deltas; the flush at 1600 must divide by the 650ms up to
+		// the last delta, not by the 500ms since the previous write.
+		for (let index = 0; index < 3; index++) {
+			fake.advance(50);
+			fake.controller.assistantEvent({ type: "text_delta", delta: "aaaa" });
+		}
+		fake.advance(350);
+		expect(fake.last().at).toBe(1600);
+		expect(fake.last().tokPerSecond).toBeCloseTo(18.4615, 3);
+
+		fake.controller.assistantMessageEnd();
+		expect(fake.last()).toEqual({ v: 1, at: 1600, phase: "waiting" });
+		expect(fake.controller.state().tokPerSecond).toBeNull();
+	});
+
+	test("prefers provider usage when it is ahead of the character estimate", () => {
+		const fake = setup();
+		fake.controller.agentStart();
+		fake.advance(600);
+		fake.controller.assistantEvent({ type: "text_start" });
+		emitTimedDeltas(fake.controller, fake, "text_delta");
+		fake.advance(50);
+		fake.controller.assistantEvent({
+			type: "text_delta",
+			delta: "aaaa",
+			partial: { role: "assistant", usage: { output: 60 } },
+		});
+		fake.advance(500);
+		// 60 reported tokens over the 450ms up to this delta.
+		expect(fake.last().tokPerSecond).toBeCloseTo(133.333, 3);
 	});
 });
 
