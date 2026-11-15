@@ -18,8 +18,11 @@ const sandbox = mkdtempSync(join(tmpdir(), "mypi-smoke-"));
 const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
 const oldPath = process.env.PATH;
 const oldOffline = process.env.PI_OFFLINE;
+const oldHerdrPaneId = process.env.HERDR_PANE_ID;
 process.env.PI_CODING_AGENT_DIR = sandbox;
 process.env.PI_OFFLINE = "1";
+// The hwc bridge is Herdr-only; keep the inherited pane id out of the base load.
+delete process.env.HERDR_PANE_ID;
 const bin = join(sandbox, "bin");
 mkdirSync(bin);
 // Test repository/PR results without contacting GitHub or modifying a checkout.
@@ -43,11 +46,12 @@ try {
 		compaction: { enabled: false },
 		retry: { enabled: true, maxRetries: 1, baseDelayMs: 1100 },
 	});
-	const loader = new sdk.DefaultResourceLoader({
+	const createLoader = () => new sdk.DefaultResourceLoader({
 		cwd: sandbox, agentDir: sandbox, settingsManager,
 		noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 		additionalExtensionPaths: [root],
 	});
+	const loader = createLoader();
 	await loader.reload();
 	const loaded = loader.getExtensions();
 	assert.deepEqual(loaded.errors, []);
@@ -61,6 +65,21 @@ try {
 	assert.equal(extension.handlers.get("agent_settled").length, 4);
 	assert.deepEqual([...extension.commands.keys()], ["minimal-footer", "dm", "default-model"]);
 	assert.deepEqual([...extension.tools.keys()], ["set_default_model"]);
+
+	// A Herdr pane adds the hwc bridge.  Use a second loader so the session's
+	// base registration stays exactly as above, then restore the inherited env.
+	process.env.HERDR_PANE_ID = "fixture:p1";
+	try {
+		const bridgeLoader = createLoader();
+		await bridgeLoader.reload();
+		const bridged = bridgeLoader.getExtensions();
+		assert.deepEqual(bridged.errors, []);
+		assert.equal(bridged.extensions.length, 1);
+		assert.equal(bridged.extensions[0].handlers.get("session_start").length, 6);
+		assert.deepEqual([...bridged.extensions[0].commands.keys()], ["minimal-footer", "dm", "default-model", "hwc-rewind"]);
+	} finally {
+		delete process.env.HERDR_PANE_ID;
+	}
 
 	const modelRuntime = await sdk.ModelRuntime.create({
 		authPath: join(sandbox, "auth.json"), modelsPath: null,
@@ -183,14 +202,14 @@ try {
 	component?.dispose(); component = undefined;
 	assert.equal(branchSubscriptions, 0);
 	assert.deepEqual(errors, []);
-	console.log(`Pi ${JSON.parse(readFileSync(join(host, "package.json"), "utf8")).version}: one entry, eight features, retry ${duration}ms, isolated settings, cleanup OK`);
+	console.log(`Pi ${JSON.parse(readFileSync(join(host, "package.json"), "utf8")).version}: one entry, nine features, retry ${duration}ms, isolated settings, cleanup OK`);
 } finally {
 	if (session) {
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		session.dispose();
 	}
 	component?.dispose();
-	for (const [key, value] of [["PI_CODING_AGENT_DIR", oldAgentDir], ["PATH", oldPath], ["PI_OFFLINE", oldOffline]]) {
+	for (const [key, value] of [["PI_CODING_AGENT_DIR", oldAgentDir], ["PATH", oldPath], ["PI_OFFLINE", oldOffline], ["HERDR_PANE_ID", oldHerdrPaneId]]) {
 		if (value === undefined) delete process.env[key]; else process.env[key] = value;
 	}
 	rmSync(sandbox, { recursive: true, force: true });

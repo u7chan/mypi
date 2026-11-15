@@ -7,6 +7,7 @@ import registerGitStatus from "../src/git-status/extension.ts";
 import registerElapsed from "../src/elapsed/extension.ts";
 import registerTokRate from "../src/tok-rate/extension.ts";
 import registerLiveThinking from "../src/live-thinking/extension.ts";
+import registerHwcRewind from "../src/hwc-rewind/extension.ts";
 
 /** The only Pi entry point. Each feature owns its own state and lifecycle. */
 export default function mypi(pi: ExtensionAPI): void {
@@ -18,4 +19,5 @@ export default function mypi(pi: ExtensionAPI): void {
 	registerElapsed(pi);
 	registerTokRate(pi);
 	registerLiveThinking(pi);
+	registerHwcRewind(pi);
 }
