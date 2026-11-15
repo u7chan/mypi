@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import mypi from "../extensions/index.ts";
 
 // Arrays are deliberate: a Map<event, handler> would mask handler clobbering.
-function createHarness(mode = "tui", hasUI = true) {
+function createHarness(mode = "tui", hasUI = true, herdr = false) {
 	const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
 	const commands = new Map<string, any>();
 	const tools = new Map<string, any>();
@@ -12,6 +12,9 @@ function createHarness(mode = "tui", hasUI = true) {
 	const working: Array<string | undefined> = [];
 	const footerCalls: Array<any> = [];
 	const execCalls: string[] = [];
+	const editorTexts: string[] = [];
+	const notices: Array<{ message: string; type?: string }> = [];
+	const appendedEntries: Array<{ customType: string; data: unknown }> = [];
 	let branchSubscriptions = 0;
 	let component: any;
 	const ctx = {
@@ -19,10 +22,16 @@ function createHarness(mode = "tui", hasUI = true) {
 		model: { id: "fixture-model", provider: "fixture", reasoning: true, contextWindow: 256_000,
 			cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 } },
 		thinkingLevel: "high",
-		sessionManager: { getCwd: () => "/fixture", getSessionName: () => "integration", getSessionFile: () => undefined },
+		sessionManager: {
+			getCwd: () => "/fixture", getSessionName: () => "integration", getSessionFile: () => undefined,
+			getEntries: () => [], getBranch: () => [], getEntry: () => undefined, getLeafId: () => null,
+		},
 		getContextUsage: () => ({ tokens: 1000, contextWindow: 256_000, percent: 1 }),
+		navigateTree: async () => ({ cancelled: false }),
 		ui: {
 			theme: { fg: (_color: string, text: string) => text },
+			setEditorText(text: string) { editorTexts.push(text); },
+			notify(message: string, type?: string) { notices.push({ message, type }); },
 			setStatus(key: string, text: string | undefined) {
 				if (!hasUI) throw new Error("headless UI access");
 				updates.push([key, text]);
@@ -63,10 +72,24 @@ function createHarness(mode = "tui", hasUI = true) {
 				: args[0] === "rev-parse" ? "fixture-branch\n"
 				: "origin\tgit@github.com:example/fixture.git (fetch)\n" };
 		},
+		appendEntry(customType: string, data: unknown) {
+			appendedEntries.push({ customType, data });
+		},
 	};
-	mypi(pi as never);
+	// The hwc bridge registers only inside Herdr.  Keep the inherited pane id
+	// out of the base tests and restore it for the bridge check.
+	const inheritedPaneId = process.env.HERDR_PANE_ID;
+	if (herdr) process.env.HERDR_PANE_ID = "fixture:p1";
+	else delete process.env.HERDR_PANE_ID;
+	try {
+		mypi(pi as never);
+	} finally {
+		if (inheritedPaneId === undefined) delete process.env.HERDR_PANE_ID;
+		else process.env.HERDR_PANE_ID = inheritedPaneId;
+	}
 	return {
 		handlers, commands, tools, statuses, updates, working, footerCalls, execCalls, ctx,
+		editorTexts, notices, appendedEntries,
 		get component() { return component; },
 		get branchSubscriptions() { return branchSubscriptions; },
 		async emit(type: string, data: object = {}) {
@@ -92,6 +115,14 @@ test("manifest exposes one entry, which registers exactly the eight feature sign
 	// `agent_end` is live-thinking's: elapsed deliberately ends at `agent_settled`,
 	// because an automatic retry follows `agent_end` without a new start.
 	expect(h.handlers.get("agent_end")).toHaveLength(1);
+	expect(h.commands.has("hwc-rewind")).toBe(false);
+});
+
+test("Herdr panes additionally register the hwc bridge and its session_start handler", () => {
+	const h = createHarness("tui", true, true);
+	expect([...h.commands.keys()]).toEqual(["minimal-footer", "dm", "default-model", "hwc-rewind"]);
+	expect(h.handlers.get("session_start")).toHaveLength(6);
+	expect(h.commands.get("hwc-rewind").description).toContain("hwc");
 });
 
 test("shared events compose, statuses coexist in minimal footer, and shutdown stops timers", async () => {

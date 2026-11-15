@@ -6,7 +6,8 @@
 公開Gitリポジトリで配布し、npmには公開しません。
 
 1つのPiパッケージとして配布し、拡張のエントリーポイントも1つ（`extensions/index.ts`）にまとめています。
-起動時には8機能を常に登録し、Extensions欄にはmypi由来の項目を1つだけ表示します。
+通常の起動では8機能を登録し、Herdrのペイン（`HERDR_PANE_ID`がある起動）ではhwc連携の`hwc-rewind`を加えた9機能を登録します。
+Extensions欄にはmypi由来の項目を1つだけ表示します。
 機能別のON/OFF設定や設定UIはありません。他の外部拡張の表示は変更しません。
 既存の`/minimal-footer`などの操作は残しています。
 
@@ -22,6 +23,7 @@
 | elapsed | `before_agent_start`から`agent_settled`までの経過時間を`Working (12m 3s)`にリアルタイムで表示し、確定値を`elapsed 12m 3s`としてフッターに残します |
 | tok-rate | 生成中は最新の assistant 応答の速度を`4.6 tok/s`（差分からの推定）で表示し、指示が落ち着いたら測定できた成功メッセージの合計`usage.output`÷合計生成時間を`avg 92 tok/s`で表示します。短すぎる、またはまとめて届いた応答は生成時間を測れないため`-- tok/s`と表示します |
 | live-thinking | 実行中のphase・thinkingの末尾・生成中の速度を、セッションの隣の`<session>.jsonl.thinking.json`に書き出します。hwc（Herdr Web Client）などの外部クライアントが、piのプロセスにアタッチせず、TUIも読まずに実行中の状態を表示できます。phaseは`waiting` / `thinking` / `writing` / `tool-call` / `tool` / `compacting` / `waiting-user`の7段階で、1行JSONを上書きのみします。`tokPerSecond`はtok-rateと同じsamplerで測った現在のassistant応答の推定速度（tok/s、丸めなし）で、`thinking` / `writing` / `tool-call`のときだけ入り、`message_end`で消えます。thinkingは末尾1200文字だけを500ms間隔でまとめ、phaseの変化は即時に書きます。tmpとrenameで置き換えて権限0600にし、`agent_settled`と`session_shutdown`で削除、セッションファイルのない起動では何もしません。TUI・トランスクリプト・フッターは変更しません |
+| hwc-rewind | Herdrのペイン（`HERDR_PANE_ID`がある起動）だけで有効になるhwc（Herdr Web Client）連携です。`session_start`で`hwc-capabilities`を1回だけ追記し、hwcが過去の発言を編集できるペインだと分かるようにします。`/hwc-rewind <entryId> <requestId>`は対象のuser発言の親まで葉を移し（要約なし）、入力欄を空にして`hwc-rewind` markerを追記します。同じ`requestId`の再送は何もせず成功し、marker追記だけ失敗した再送は移動せずmarkerだけを追記します。ファイル変更の復元と分岐の要約はしません。通常のpi起動ではコマンドもcapabilityも登録しません |
 
 minimal-footerのステータスはコンテキスト使用率と同じ行に`5.0k/256k (2.0%) · elapsed 2s · 4.6 tok/s · ttl 4:31 · cached 1k`のように並べ、`elapsed` / `tok` / `cache-ttl` / `cache-reuse`の順、他の拡張はキー順でその後、`git`は最後に置きます。
 区切りは` · `で、ラベルはdim、値は通常色にします。幅が足りない場合は右寄せのモデル情報を`provider model level` → `model level` → `model` → 非表示の順に落とし、ステータスを優先します。
@@ -51,7 +53,7 @@ OSC 8リンクは表示幅に含めず、切り詰める際にはリンクを閉
 
 ## 必要な環境
 
-- 検証環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.0.0です。
+- 検証環境はWSL / Linux、Node.js 24.18.0、Bun 1.3.14、Pi 1.5.2です。
 - 実行にはPiとNode.jsが必要です。Bunは開発テスト用です。
 - リポジトリ表示には`git`、PR表示には認証済みの`gh` CLIが必要です。
   `gh`がないか未認証の場合や、PRがない場合は、PR部分だけを省略します。
@@ -109,7 +111,7 @@ pi --no-extensions --no-session --verbose -e "$PWD"
 ### 構成
 
 ```text
-extensions/index.ts       # 唯一のエントリーポイント。8つの登録関数を呼ぶだけ
+extensions/index.ts       # 唯一のエントリーポイント。9つの登録関数を呼ぶだけ（hwc-rewindはHerdrのペインだけ）
 src/<機能>/extension.ts   # Piアダプター・登録処理・機能別の状態
 src/<機能>/core.ts        # 機能別のコア処理
 src/tok-rate/sampler.ts   # tok-rateとlive-thinkingが共有する生成速度の測定
@@ -172,6 +174,23 @@ scripts/smoke-*.mjs        # 実際のPiでの隔離検証
   `message_end`で消し、`assistantMessageStart` / `agentStart` / `turnStart`でリセットします。
   `waiting` / `tool` / `compacting` / `waiting-user`では出しません。
   履歴・確定値・avgは持たず、値は100000を上限にします。
+- hwc-rewindはHerdrのペイン（`HERDR_PANE_ID`）だけで登録します。通常のpi起動ではコマンド・capabilityとも
+  存在せず、セッションにも何も追記しません。capabilityは`session_start`時の記録なので、起動中にmypiを
+  外してもhwc側の検出は変わりません。mypiの配備がhwcより先に必要です。
+- hwc-rewindのmarkerは`v: 1`、`requestId`、`targetId`、`leafId`を持ちます。`leafId`は移動後の葉、
+  つまり対象の親でmarker自身ではありません。Pi 1.5.2では先頭のuser発言の前にもsystem messageの
+  エントリがあるため、通常は`null`ではなくその親のIDになります（親が無い場合だけ`null`）。
+  markerは移動後の葉の子として追記されます。
+  markerとcapabilityは`/tree`に`[custom: hwc-rewind]` / `[custom: hwc-capabilities]`として見え、
+  チャットとLLMの文脈には入りません。`v`を上げるときはhwcと同時に更新します。
+- hwc-rewindが葉を移せるのは、対象がactive branch上のuser発言で、現在の葉ではないときだけです。
+  最後の1通は葉になるため編集できません。実行中・圧縮中の`navigateTree`は拒否され、markerが
+  書かれないためhwcはタイムアウトします。mypiは再試行しません。
+  marker追記に失敗した場合はpiのメモリ上だけ葉が移り、同じ`requestId`の再送で対象の親が現在の葉と
+  一致すればmarkerだけを追記して復旧しますが、追記が続けて失敗する場合はhwcから完了できません。
+- hwc-rewindは入力欄を空にします。TUIに書きかけの下書きがある場合はその下書きを消します。
+  また、入力欄に行頭`/`以外の書きかけがあるとhwcの`pane.send_input`ではコマンドが発火せず、
+  markerも書かれません。mypiからは検知できません。
 - 設定の更新キューは、同じPiプロセス内で更新を直列化するものです。
   他のプロセスや手作業での編集による同時更新を、ファイルロックで排他制御するものではありません。
 - エントリーポイントやimportのエラーは全機能のロードに影響します。
