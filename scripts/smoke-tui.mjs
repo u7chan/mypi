@@ -30,7 +30,7 @@ const server = createServer(async (request, response) => {
 		send({}, "tool_calls");
 	} else if (last?.role === "user" && lastText.includes("ask-user-option")) {
 		send({ tool_calls: [{ index: 0, id: "fixture-ask", type: "function", function: {
-			name: "ask_user", arguments: JSON.stringify({ question: "Which fixture?", options: ["Alpha", "Beta"] }),
+			name: "ask_user", arguments: JSON.stringify({ question: "Which fixture?", options: ["Alpha", "Beta"], recommended: "Alpha" }),
 		} }] });
 		send({}, "tool_calls");
 	} else if (last?.role === "user" && lastText.includes("ask-user-text")) {

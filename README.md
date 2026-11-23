@@ -19,7 +19,7 @@ Extensions欄にはmypi由来の項目を1つだけ表示します。
 | cache-reuse | アシスタントの最新の応答でキャッシュから読まれたトークン数を`cached 1.5k`と表示します。金額の推定はしません。ヒットしなかった応答やモデル・セッションの切り替え時には表示を消します |
 | minimal-footer | トークン数・コストの統計ブロックを除いた2行のフッター（他の拡張のステータスが2行目に収まらないときだけ3行）に、cwd・ブランチ・セッション名、コンテキスト使用率、モデル・thinking（`zai glm-5.3-flash max`）、各ステータスを表示します。`/minimal-footer`でPi標準のフッターと切り替えます |
 | default-model | `/dm`（別名`/default-model`）と`set_default_model`ツールで起動時の既定モデル・thinkingを保存します |
-| ask-user | `ask_user`ツールでユーザーに1問だけ質問し、TUIのダイアログかhwc（Web）の回答を待ちます。質問は500コードポイント、選択肢は2〜6個（各120コードポイント）、自由入力の回答は2000コードポイントまでです。Herdrの永続TUI（`mode`が`tui`で`HERDR_ENV=1`・`HERDR_SOCKET_PATH`・`HERDR_PANE_ID`とセッションファイルが揃う場合）だけ、セッションの隣に`<session>.ask.json`を書いて待ちの間`herdr:blocked`を報告します。それ以外はダイアログだけを使い、print / JSONではエラーを返します |
+| ask-user | `ask_user`ツールでユーザーに1問だけ質問し、TUIのダイアログかhwc（Web）の回答を待ちます。質問は500コードポイント、選択肢は2〜6個（各120コードポイント、推奨を1つ指定）、自由入力の回答は2000コードポイントまでです。Herdrの永続TUI（`mode`が`tui`で`HERDR_ENV=1`・`HERDR_SOCKET_PATH`・`HERDR_PANE_ID`とセッションファイルが揃う場合）だけ、セッションの隣に`<session>.ask.json`を書いて待ちの間`herdr:blocked`を報告します。それ以外はダイアログだけを使い、print / JSONではエラーを返します |
 | git-status | origin（なければupstreamまたは最初のリモート）のリポジトリと、現在のブランチのPRをフッターにOSC 8リンクとして表示します |
 | elapsed | `before_agent_start`から`agent_settled`までの経過時間を`Working (12m 3s)`にリアルタイムで表示し、確定値を`elapsed 12m 3s`としてフッターに残します |
 | tok-rate | 生成中は最新の assistant 応答の速度を`4.6 tok/s`（差分からの推定）で表示し、指示が落ち着いたら測定できた成功メッセージの合計`usage.output`÷合計生成時間を`avg 92 tok/s`で表示します。短すぎる、またはまとめて届いた応答は生成時間を測れないため`-- tok/s`と表示します |
@@ -54,10 +54,14 @@ OSC 8リンクは表示幅に含めず、切り詰める際にはリンクを閉
 
 ### `ask_user`とWeb回答
 
-`ask_user`はモデルがユーザーに1問だけ質問して回答を待つツールです。`options`があれば選択のみ、
-なければ自由入力のみで、「選択肢＋その他」は扱いません。回答はツール結果に
-`ユーザーの回答: ...`として返り、bash / editの実行許可にはなりません。
+`ask_user`はモデルがユーザーに1問だけ質問して回答を待つツールです。`options`を渡すときは
+`recommended`に選択肢の1つを指定し、TUIではそれを先頭に`推奨💡`付きで表示します。
+`options`があっても最下部の`その他（自由入力）`から自由入力できます。`options`がなければ
+最初から自由入力です。回答はツール結果に`ユーザーの回答: ...`として返り、
+bash / editの実行許可にはなりません。
 1セッションで同時に待てるのは1問だけです。2問目はファイルにもダイアログにも触れずにエラーを返します。
+TUIの自由入力は、選択肢を選んだあとに`input`ダイアログを開く2段階です。入力側でEscを押すと
+質問全体が未回答になります。
 
 Herdrの永続TUI（`ctx.mode`が`tui`、`HERDR_ENV=1`、空でない`HERDR_SOCKET_PATH`、`HERDR_PANE_ID`、
 セッションファイルがすべて揃う場合）では、hwc（Herdr Web Client）とセッションの隣のファイルでやり取りします。
@@ -67,10 +71,11 @@ print / JSONにはダイアログがないため、`ask_user`はエラーを返�
 - pending（mypiが書く）: `<session path>.ask.json`
 
   ```json
-  { "v": 1, "id": "<uuid>", "question": "...", "options": ["..."] }
+  { "v": 1, "id": "<uuid>", "question": "...", "options": ["..."], "recommended": "...", "freeText": true }
   ```
 
-  `options`は自由入力のとき`null`です。
+  `options`は自由入力のとき`null`です。`recommended`は`options`の1つで、表示だけに使います。
+  `freeText`は選択肢があってもtext回答を受け付けるかの可否です。
 
 - answer（hwcが書く）: `<session path>.ask.answer.json`
 
@@ -78,7 +83,8 @@ print / JSONにはダイアログがないため、`ask_user`はエラーを返�
   { "v": 1, "id": "<uuid>", "answer": { "kind": "option", "label": "..." } }
   ```
 
-  自由入力のときは`answer`を`{ "kind": "text", "text": "..." }`にします。
+  自由入力のときは`answer`を`{ "kind": "text", "text": "..." }`にします。`freeText`がtrueなら、
+  選択肢がある質問でもtext回答を使えます。
 
 どちらも1行JSONで末尾に改行を1つ付け、tmpとrenameで置き換えて権限を0600にします。
 読み取りはJSONをparseする前にサイズを見ます（pending 8KB、answer 16KB）。
@@ -93,7 +99,9 @@ TUIが先ならファイルを消してTUIの回答を返します。タイム�
 待機中は`herdr:blocked`の`active`を1回送り、後始末で`inactive`を1回だけ返します。
 pendingを書けなかった場合はどちらも送りません（Herdrの`blockedCount`をずらさないため）。
 後始末の順序は「勝者確定・監視停止 → pending削除 → answer削除 → inactive」です。
-hwc側のカード表示と回答APIは別Issueです。
+hwcは推奨を先頭のカードにし、`freeText`がtrueなら`その他（自由入力）`を出します。
+`recommended`と`freeText`が無い古いpendingは、`recommended: null` / `freeText: false`
+（`options`が`null`ならtrue）として読むため、古いhwcとmypiの組み合わせでも質問カードは壊れません。
 
 ## 必要な環境
 
@@ -140,8 +148,9 @@ SDKのプロバイダーとgit/ghにはフィクスチャを使い、TUIのプ�
 
 TUIではプロンプト、`save-default`によるツール実行、`/dm show`、
 `/dm mypi-smoke/other-model:high`、`/dm`の選択画面、`/minimal-footer`での切り替えを試し、
-`ask-user-option`で選択肢ダイアログ（回答と、再度送ってEscでの未回答の両方）、
-`ask-user-text`で自由入力ダイアログを確認して、`/quit`で終了します。
+`ask-user-option`で`推奨💡`付きの選択肢と`その他（自由入力）`の2段階ダイアログ
+（回答と、再度送ってEscでの未回答の両方）、`ask-user-text`で自由入力ダイアログを確認して、
+`/quit`で終了します。
 ANSIログを残す場合は`PI_SMOKE_TUI_LOG=/tmp/mypi-tui.log`を指定します。
 
 手元のモデルで一時的にロードする場合は、次のコマンドを使います。インストールや配布の切り替えは行いません。
@@ -237,9 +246,8 @@ scripts/smoke-*.mjs        # 実際のPiでの隔離検証
 - hwc-rewindは入力欄を空にします。TUIに書きかけの下書きがある場合はその下書きを消します。
   また、入力欄に行頭`/`以外の書きかけがあるとhwcの`pane.send_input`ではコマンドが発火せず、
   markerも書かれません。mypiからは検知できません。
-- ask-userのWeb回答は、hwc側の実装（別Issue）が入るまで使えません。mypiはpendingを書くだけで、
-  それを読むクライアントがいません。Webの回答は`<session>.ask.answer.json`に置かれ、
-  次の監視（300ms）で読まれます。
+- ask-userのWeb回答は`<session>.ask.answer.json`に置かれ、次の監視（300ms）で読まれます。
+  hwcが推奨の表示と自由入力を行うため、`recommended`と`freeText`はmypiとhwcで同じ意味に保ちます。
 - ask-userのファイル契約と`herdr:blocked`は、Herdrの永続TUIでセッションファイルがあるときだけ使います。
   `--no-session`、Herdrの外、RPCではTUI / RPCのダイアログだけ、print / JSONではエラーになります。
 - TUIで答えた直後（監視の300ms以内）にWebが回答すると、TUIの回答を採り、answerファイルは

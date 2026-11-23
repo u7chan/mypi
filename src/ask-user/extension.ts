@@ -7,12 +7,15 @@ import {
 	BLOCKED_LABEL,
 	createAskUserController,
 	defaultScheduler,
+	displayOptions,
 	MAX_OPTIONS,
 	MAX_QUESTION_CODEPOINTS,
 	MIN_OPTIONS,
 	normalizeOptions,
 	normalizeQuestion,
+	normalizeRecommended,
 	pendingPathFor,
+	RECOMMENDED_PREFIX,
 	type AskUserAnswer,
 	type AskUserController,
 	type AskUserFileSystem,
@@ -28,7 +31,9 @@ export {
 	BLOCKED_LABEL,
 	codePointLength,
 	createAskUserController,
+	displayOptions,
 	FORMAT_VERSION,
+	FREE_TEXT_LABEL,
 	isValidUuid,
 	MAX_ANSWER_BYTES,
 	MAX_ANSWER_CODEPOINTS,
@@ -39,7 +44,9 @@ export {
 	MIN_OPTIONS,
 	normalizeOptions,
 	normalizeQuestion,
+	normalizeRecommended,
 	parseAnswerFile,
+	RECOMMENDED_PREFIX,
 	parsePending,
 	PENDING_SUFFIX,
 	pendingPathFor,
@@ -60,6 +67,7 @@ export type {
 	AskUserRequest,
 	AskUserRoute,
 	AskUserScheduler,
+	OptionDisplay,
 	PendingQuestion,
 	Validation,
 } from "./core.ts";
@@ -84,7 +92,11 @@ const TOOL_PARAMETERS: TSchema = {
 			items: { type: "string" },
 			minItems: MIN_OPTIONS,
 			maxItems: MAX_OPTIONS,
-			description: `Optional choices (${MIN_OPTIONS}-${MAX_OPTIONS}). Omit for free text; the user then types the answer.`,
+			description: `Optional choices (${MIN_OPTIONS}-${MAX_OPTIONS}). When set, recommended is required and the user can also type a free-text answer.`,
+		},
+		recommended: {
+			type: "string",
+			description: `Required when options is set: one of the option labels you recommend. It is shown first with ${RECOMMENDED_PREFIX.trim()}.`,
 		},
 	},
 	required: ["question"],
@@ -94,6 +106,7 @@ const TOOL_PARAMETERS: TSchema = {
 type ToolParams = {
 	question?: unknown;
 	options?: unknown;
+	recommended?: unknown;
 };
 
 type AskUserDetails =
@@ -242,6 +255,8 @@ export default function askUserExtension(pi: ExtensionAPI, environment?: AskUser
 		promptSnippet: "Ask the user a question and wait for the answer",
 		promptGuidelines: [
 			"リポジトリや会話から決められない判断だけに使い、日常的な確認には使わない",
+			"options を渡すときは recommended に推奨する選択肢を 1 つ指定する",
+			"options があってもユーザーは自由入力できる",
 			"回答は bash / edit の実行を許可しない",
 			"対話セッションでのみ使える",
 		],
@@ -252,6 +267,10 @@ export default function askUserExtension(pi: ExtensionAPI, environment?: AskUser
 			if (!question.ok) return errorResult({ status: "invalid", error: question.error }, question.error);
 			const options = normalizeOptions(params.options);
 			if (!options.ok) return errorResult({ status: "invalid", error: options.error }, options.error);
+			const recommended = normalizeRecommended(params.recommended, options.value);
+			if (!recommended.ok) {
+				return errorResult({ status: "invalid", error: recommended.error }, recommended.error);
+			}
 
 			if (!ctx.hasUI) {
 				return errorResult(
@@ -266,11 +285,28 @@ export default function askUserExtension(pi: ExtensionAPI, environment?: AskUser
 					{
 						question: question.value,
 						options: options.value,
+						recommended: recommended.value,
+						freeText: true,
 						route,
-						prompt: (dialogSignal) =>
-							options.value === null
-								? ctx.ui.input(question.value, "", { signal: dialogSignal })
-								: ctx.ui.select(question.value, options.value, { signal: dialogSignal }),
+						prompt: async (dialogSignal) => {
+							if (options.value === null) {
+								const text = await ctx.ui.input(question.value, "", { signal: dialogSignal });
+								return text === undefined ? undefined : { kind: "text", text };
+							}
+							const display = displayOptions(options.value, recommended.value, true);
+							const picked = await ctx.ui.select(question.value, display.labels, {
+								signal: dialogSignal,
+							});
+							if (picked === undefined) return undefined;
+							if (picked === display.freeTextLabel) {
+								const text = await ctx.ui.input(question.value, "", { signal: dialogSignal });
+								return text === undefined ? undefined : { kind: "text", text };
+							}
+							const label = display.byLabel.get(picked);
+							return label === undefined
+								? { kind: "option", label: picked }
+								: { kind: "option", label };
+						},
 					},
 					signal,
 				);
