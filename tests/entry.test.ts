@@ -323,7 +323,7 @@ test("ask_user reports herdr:blocked only while a Herdr TUI question waits", asy
 		controller.abort();
 		const result = await running;
 		expect(result.isError).toBe(true);
-		expect(result.details).toEqual({ status: "aborted" });
+		expect(result.details).toEqual({ status: "aborted", askId: expect.any(String) });
 		expect(blocked(h.events)).toEqual([
 			{ active: true, label: "ユーザーの回答待ち" },
 			{ active: false, label: "ユーザーの回答待ち" },
@@ -344,7 +344,7 @@ test("ask_user reports herdr:blocked only while a Herdr TUI question waits", asy
 			undefined,
 			plain.ctx,
 		);
-		expect(plainResult.details).toEqual({ status: "answered", winner: "tui", kind: "option" });
+		expect(plainResult.details).toEqual({ status: "answered", askId: "", winner: "tui", kind: "option" });
 		expect(plain.events).toEqual([]);
 		expect(existsSync(`${plainSession}.ask.json`)).toBe(false);
 	} finally {

@@ -16,7 +16,7 @@ import {
 	normalizeRecommended,
 	pendingPathFor,
 	RECOMMENDED_PREFIX,
-	type AskUserAnswer,
+	type AskAnswer,
 	type AskUserController,
 	type AskUserFileSystem,
 	type AskUserRoute,
@@ -110,12 +110,12 @@ type ToolParams = {
 };
 
 type AskUserDetails =
-	| { status: "answered"; winner: "tui" | "file"; kind: "option" | "text" }
-	| { status: "dismissed" }
-	| { status: "aborted" }
+	| { status: "answered"; askId: string; winner: "tui" | "file"; kind: "option" | "text" }
+	| { status: "dismissed"; askId: string }
+	| { status: "aborted"; askId: string }
 	| { status: "busy" }
 	| { status: "unsupported" }
-	| { status: "invalid"; error: string };
+	| { status: "invalid"; askId: string; error: string };
 
 type ToolResult = {
 	content: Array<{ type: "text"; text: string }>;
@@ -190,7 +190,7 @@ function routeFor(
 	return { pendingPath: pendingPathFor(sessionFile), answerPath: answerPathFor(sessionFile) };
 }
 
-function answerText(answer: AskUserAnswer): string {
+function answerText(answer: AskAnswer): string {
 	return answer.kind === "option" ? answer.label : answer.text;
 }
 
@@ -203,16 +203,21 @@ function mapOutcome(outcome: Awaited<ReturnType<AskUserController["ask"]>>): Too
 		case "answered":
 			return {
 				content: [{ type: "text", text: `ユーザーの回答: ${answerText(outcome.answer)}` }],
-				details: { status: "answered", winner: outcome.winner, kind: outcome.answer.kind },
+				details: {
+					status: "answered",
+					askId: outcome.askId,
+					winner: outcome.winner,
+					kind: outcome.answer.kind,
+				},
 			};
 		case "dismissed":
 			return {
 				content: [{ type: "text", text: "ユーザーは回答しませんでした。" }],
-				details: { status: "dismissed" },
+				details: { status: "dismissed", askId: outcome.askId },
 			};
 		case "aborted":
 			return errorResult(
-				{ status: "aborted" },
+				{ status: "aborted", askId: outcome.askId },
 				"ask_user was interrupted before the user answered.",
 			);
 		case "busy":
@@ -221,7 +226,10 @@ function mapOutcome(outcome: Awaited<ReturnType<AskUserController["ask"]>>): Too
 				"ask_user is already waiting for an answer in this session; answer or dismiss the open question first.",
 			);
 		case "invalid":
-			return errorResult({ status: "invalid", error: outcome.error }, `ask_user: ${outcome.error}`);
+			return errorResult(
+				{ status: "invalid", askId: outcome.askId, error: outcome.error },
+				`ask_user: ${outcome.error}`,
+			);
 	}
 }
 
@@ -264,12 +272,19 @@ export default function askUserExtension(pi: ExtensionAPI, environment?: AskUser
 		async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
 			const params = rawParams as ToolParams;
 			const question = normalizeQuestion(params.question);
-			if (!question.ok) return errorResult({ status: "invalid", error: question.error }, question.error);
+			if (!question.ok) {
+				return errorResult({ status: "invalid", askId: "", error: question.error }, question.error);
+			}
 			const options = normalizeOptions(params.options);
-			if (!options.ok) return errorResult({ status: "invalid", error: options.error }, options.error);
+			if (!options.ok) {
+				return errorResult({ status: "invalid", askId: "", error: options.error }, options.error);
+			}
 			const recommended = normalizeRecommended(params.recommended, options.value);
 			if (!recommended.ok) {
-				return errorResult({ status: "invalid", error: recommended.error }, recommended.error);
+				return errorResult(
+					{ status: "invalid", askId: "", error: recommended.error },
+					recommended.error,
+				);
 			}
 
 			if (!ctx.hasUI) {
@@ -313,7 +328,10 @@ export default function askUserExtension(pi: ExtensionAPI, environment?: AskUser
 				return mapOutcome(outcome);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return errorResult({ status: "invalid", error: message }, `ask_user: ${message}`);
+				return errorResult(
+					{ status: "invalid", askId: "", error: message },
+					`ask_user: ${message}`,
+				);
 			}
 		},
 	});

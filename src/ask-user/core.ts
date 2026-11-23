@@ -87,11 +87,11 @@ export type AskUserRequest = {
 };
 
 export type AskUserOutcome =
-	| { status: "answered"; answer: AskAnswer; winner: "tui" | "file" }
-	| { status: "dismissed" }
-	| { status: "aborted" }
+	| { status: "answered"; askId: string; answer: AskAnswer; winner: "tui" | "file" }
+	| { status: "dismissed"; askId: string }
+	| { status: "aborted"; askId: string }
 	| { status: "busy" }
-	| { status: "invalid"; error: string };
+	| { status: "invalid"; askId: string; error: string };
 
 export type AskUserFileSystem = {
 	/** Returns `null` when the file is missing, unreadable or over `maxBytes`. */
@@ -418,7 +418,7 @@ export function createAskUserController(options: AskUserControllerOptions): AskU
 		signal: AbortSignal | undefined,
 	): Promise<AskUserOutcome> {
 		// Aborted before entry: do not touch the filesystem or open a dialog.
-		if (signal?.aborted) return { status: "aborted" };
+		if (signal?.aborted) return { status: "aborted", askId: "" };
 
 		const { route } = request;
 		const id = route === null ? "" : makeUuid();
@@ -513,20 +513,27 @@ export function createAskUserController(options: AskUserControllerOptions): AskU
 			const tuiAnswer = await request.prompt(dialog.signal);
 
 			if (winner === "file" && fileAnswer !== null) {
-				return { status: "answered", answer: fileAnswer, winner: "file" };
+				return { status: "answered", askId: id, answer: fileAnswer, winner: "file" };
 			}
-			if (winner === "aborted") return { status: "aborted" };
+			if (winner === "aborted") return { status: "aborted", askId: id };
 
 			stopPolling();
 			winner = "tui";
 
-			if (tuiAnswer === undefined) return { status: "dismissed" };
+			if (tuiAnswer === undefined) return { status: "dismissed", askId: id };
 			if (tuiAnswer.kind === "text" && tuiAnswer.text.trim() === "") {
-				return { status: "dismissed" };
+				return { status: "dismissed", askId: id };
 			}
 			const valid = validateAnswerForQuestion(tuiAnswer, request.options, request.freeText);
-			if (!valid.ok) return { status: "invalid", error: valid.error };
-			return { status: "answered", answer: valid.value, winner: "tui" };
+			if (!valid.ok) return { status: "invalid", askId: id, error: valid.error };
+			return { status: "answered", askId: id, answer: valid.value, winner: "tui" };
+		} catch (error) {
+			// 質問を作った後の例外も、どの pending の失敗かを返す。
+			return {
+				status: "invalid",
+				askId: id,
+				error: error instanceof Error ? error.message : String(error),
+			};
 		} finally {
 			stopPolling();
 			signal?.removeEventListener("abort", onExternalAbort);
