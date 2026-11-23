@@ -388,6 +388,7 @@ describe("TUI and Web race", () => {
 		dialog.answerOption("B");
 		expect(await promise).toEqual({
 			status: "answered",
+			askId: ID,
 			answer: { kind: "option", label: "B" },
 			winner: "tui",
 		});
@@ -411,6 +412,7 @@ describe("TUI and Web race", () => {
 		dialog.answerText("  first\nsecond\t  ");
 		expect(await promise).toEqual({
 			status: "answered",
+			askId: ID,
 			answer: { kind: "text", text: "first\nsecond" },
 			winner: "tui",
 		});
@@ -421,7 +423,7 @@ describe("TUI and Web race", () => {
 		const dialog = createDialog();
 		const promise = request(h.controller, dialog);
 		dialog.answer(undefined);
-		expect(await promise).toEqual({ status: "dismissed" });
+		expect(await promise).toEqual({ status: "dismissed", askId: ID });
 		expect(h.blocked).toEqual([true, false]);
 		expect(h.files.size).toBe(0);
 	});
@@ -431,7 +433,7 @@ describe("TUI and Web race", () => {
 		const dialog = createDialog();
 		const promise = request(h.controller, dialog, { choices: null });
 		dialog.answerText("   ");
-		expect(await promise).toEqual({ status: "dismissed" });
+		expect(await promise).toEqual({ status: "dismissed", askId: ID });
 	});
 
 	test("a Web answer wins while the dialog is open and aborts it", async () => {
@@ -445,6 +447,7 @@ describe("TUI and Web race", () => {
 		expect(dialog.signal()?.aborted).toBe(true);
 		expect(await promise).toEqual({
 			status: "answered",
+			askId: ID,
 			answer: { kind: "option", label: "A" },
 			winner: "file",
 		});
@@ -475,6 +478,7 @@ describe("TUI and Web race", () => {
 		h.advance(POLL_INTERVAL_MS);
 		expect(await promise).toEqual({
 			status: "answered",
+			askId: ID,
 			answer: { kind: "option", label: "B" },
 			winner: "file",
 		});
@@ -508,6 +512,7 @@ describe("TUI and Web race", () => {
 		expect(dialog.signal()?.aborted).toBe(true);
 		expect(await promise).toEqual({
 			status: "answered",
+			askId: ID,
 			answer: { kind: "text", text: "custom" },
 			winner: "file",
 		});
@@ -521,6 +526,7 @@ describe("TUI and Web race", () => {
 		dialog.answerOption("B");
 		expect(await promise).toEqual({
 			status: "answered",
+			askId: ID,
 			answer: { kind: "option", label: "B" },
 			winner: "tui",
 		});
@@ -534,7 +540,7 @@ describe("TUI and Web race", () => {
 		const promise = request(h.controller, dialog, { signal: controller.signal });
 		controller.abort();
 		expect(dialog.signal()?.aborted).toBe(true);
-		expect(await promise).toEqual({ status: "aborted" });
+		expect(await promise).toEqual({ status: "aborted", askId: ID });
 		expect(h.blocked).toEqual([true, false]);
 		expect(h.files.size).toBe(0);
 		expect(h.pendingTimers()).toBe(0);
@@ -545,7 +551,7 @@ describe("TUI and Web race", () => {
 		const dialog = createDialog();
 		const controller = new AbortController();
 		controller.abort();
-		expect(await request(h.controller, dialog, { signal: controller.signal })).toEqual({ status: "aborted" });
+		expect(await request(h.controller, dialog, { signal: controller.signal })).toEqual({ status: "aborted", askId: "" });
 		expect(h.log).toEqual([]);
 		expect(h.blocked).toEqual([]);
 		expect(dialog.signals).toEqual([]);
@@ -577,6 +583,7 @@ describe("TUI and Web race", () => {
 		dialog.answerOption("A");
 		expect(await promise).toEqual({
 			status: "answered",
+			askId: "",
 			answer: { kind: "option", label: "A" },
 			winner: "tui",
 		});
@@ -637,6 +644,7 @@ describe("TUI and Web race", () => {
 		dialog.answerOption("not offered");
 		expect(await promise).toEqual({
 			status: "invalid",
+			askId: ID,
 			error: "the answer is not one of the offered options",
 		});
 		expect(h.blocked).toEqual([true, false]);
@@ -741,7 +749,7 @@ describe("extension adapter", () => {
 		expect(result).toEqual({
 			content: [{ type: "text", text: "ask_user was interrupted before the user answered." }],
 			isError: true,
-			details: { status: "aborted" },
+			details: { status: "aborted", askId: ID },
 		});
 		expect(h.events).toEqual([
 			{ channel: "herdr:blocked", data: { active: true, label: BLOCKED_LABEL } },
@@ -763,7 +771,7 @@ describe("extension adapter", () => {
 			),
 		).toEqual({
 			content: [{ type: "text", text: "ユーザーの回答: Yes" }],
-			details: { status: "answered", winner: "tui", kind: "option" },
+			details: { status: "answered", askId: ID, winner: "tui", kind: "option" },
 		});
 
 		const text = register();
@@ -772,7 +780,7 @@ describe("extension adapter", () => {
 			await text.tool.execute("call-3", { question: "Why?" }, undefined, undefined, textContext.ctx),
 		).toEqual({
 			content: [{ type: "text", text: "ユーザーの回答: free form" }],
-			details: { status: "answered", winner: "tui", kind: "text" },
+			details: { status: "answered", askId: ID, winner: "tui", kind: "text" },
 		});
 
 		const dismissed = register();
@@ -787,7 +795,7 @@ describe("extension adapter", () => {
 			),
 		).toEqual({
 			content: [{ type: "text", text: "ユーザーは回答しませんでした。" }],
-			details: { status: "dismissed" },
+			details: { status: "dismissed", askId: ID },
 		});
 	});
 
@@ -830,7 +838,7 @@ describe("extension adapter", () => {
 			),
 		).toEqual({
 			content: [{ type: "text", text: "ユーザーの回答: Yes" }],
-			details: { status: "answered", winner: "tui", kind: "option" },
+			details: { status: "answered", askId: ID, winner: "tui", kind: "option" },
 		});
 	});
 
@@ -850,7 +858,7 @@ describe("extension adapter", () => {
 			),
 		).toEqual({
 			content: [{ type: "text", text: "ユーザーの回答: maybe" }],
-			details: { status: "answered", winner: "tui", kind: "text" },
+			details: { status: "answered", askId: ID, winner: "tui", kind: "text" },
 		});
 		expect(calls).toEqual([
 			{
@@ -996,7 +1004,53 @@ describe("extension adapter", () => {
 			details: { status: "busy" },
 		});
 		dialog.answer("A");
-		expect((await first).details).toEqual({ status: "answered", winner: "tui", kind: "option" });
+		expect((await first).details).toEqual({ status: "answered", askId: ID, winner: "tui", kind: "option" });
 		expect(h.events).toHaveLength(2);
+	});
+});
+
+test("a dialog exception after pending returns invalid with the pending id", async () => {
+	const h = setup();
+	const promise = h.controller.ask({
+		question: "Which one?",
+		options: ["A", "B"],
+		recommended: "A",
+		freeText: true,
+		route: ROUTE,
+		prompt: async () => {
+			throw new Error("boom");
+		},
+	});
+	expect(await promise).toEqual({ status: "invalid", askId: ID, error: "boom" });
+	expect(h.files.size).toBe(0);
+	expect(h.blocked).toEqual([true, false]);
+});
+
+test("argument validation and pre-pending failures carry an empty askId", async () => {
+	const h = register();
+	const { ctx } = createContext({});
+	expect(
+		await h.tool.execute("call-invalid", { question: "   " }, undefined, undefined, ctx),
+	).toMatchObject({
+		isError: true,
+		details: { status: "invalid", askId: "" },
+	});
+
+	const { ctx: throwingCtx } = createContext({
+		select: async () => {
+			throw new Error("boom");
+		},
+	});
+	expect(
+		await h.tool.execute(
+			"call-throw",
+			{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+			undefined,
+			undefined,
+			throwingCtx,
+		),
+	).toMatchObject({
+		isError: true,
+		details: { status: "invalid", askId: ID, error: "boom" },
 	});
 });
