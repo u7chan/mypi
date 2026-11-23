@@ -3,6 +3,7 @@ import registerCacheReuse from "../src/cache-reuse/extension.ts";
 import registerCacheTtl from "../src/cache-ttl/extension.ts";
 import registerMinimalFooter from "../src/minimal-footer/extension.ts";
 import registerDefaultModel from "../src/default-model/extension.ts";
+import registerAskUser from "../src/ask-user/extension.ts";
 import registerGitStatus from "../src/git-status/extension.ts";
 import registerElapsed from "../src/elapsed/extension.ts";
 import registerTokRate from "../src/tok-rate/extension.ts";
@@ -15,6 +16,7 @@ export default function mypi(pi: ExtensionAPI): void {
 	registerCacheTtl(pi);
 	registerMinimalFooter(pi);
 	registerDefaultModel(pi);
+	registerAskUser(pi);
 	registerGitStatus(pi);
 	registerElapsed(pi);
 	registerTokRate(pi);
