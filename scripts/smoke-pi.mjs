@@ -204,7 +204,7 @@ try {
 	// ask_user without a Herdr pane uses only the dialog (no file contract).
 	const askCtx = session.extensionRunner.createToolContext("fixture-ask");
 	const askedOption = await extension.tools.get("ask_user").definition.execute(
-		"fixture-ask", { question: "Which fixture?", options: ["Alpha", "Beta"] }, undefined, undefined, askCtx,
+		"fixture-ask", { question: "Which fixture?", options: ["Alpha", "Beta"], recommended: "Alpha" }, undefined, undefined, askCtx,
 	);
 	assert.deepEqual(askedOption.content, [{ type: "text", text: "ユーザーの回答: Alpha" }]);
 	assert.deepEqual(askedOption.details, { status: "answered", winner: "tui", kind: "option" });

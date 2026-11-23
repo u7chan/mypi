@@ -39,6 +39,10 @@ export const POLL_INTERVAL_MS = 300;
 
 export const BLOCKED_LABEL = "ユーザーの回答待ち";
 
+/** The marker and the extra TUI row are display-only; answers use the raw labels. */
+export const RECOMMENDED_PREFIX = "推奨💡 ";
+export const FREE_TEXT_LABEL = "その他（自由入力）";
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONTROL = /\p{Cc}/u;
 
@@ -50,6 +54,10 @@ export type PendingQuestion = {
 	question: string;
 	/** `null` means free text; otherwise the user picks exactly one label. */
 	options: string[] | null;
+	/** One of `options`, shown first with `RECOMMENDED_PREFIX`; `null` without options. */
+	recommended: string | null;
+	/** Whether a text answer is accepted.  New questions always set this. */
+	freeText: boolean;
 };
 
 export type AskAnswer = { kind: "option"; label: string } | { kind: "text"; text: string };
@@ -68,10 +76,14 @@ export type AskUserRoute = {
 export type AskUserRequest = {
 	question: string;
 	options: string[] | null;
+	/** Required with `options`; must be one of the labels. */
+	recommended: string | null;
+	/** Whether a text answer is accepted even when `options` is set. */
+	freeText: boolean;
 	/** `null` disables the file contract and the Herdr blocked report. */
 	route: AskUserRoute | null;
 	/** Shows the TUI/RPC dialog. Resolves `undefined` on Esc or abort. */
-	prompt(signal: AbortSignal): Promise<string | undefined>;
+	prompt(signal: AbortSignal): Promise<AskAnswer | undefined>;
 };
 
 export type AskUserOutcome =
@@ -191,6 +203,73 @@ export function normalizeOptions(value: unknown): Validation<string[] | null> {
 	return { ok: true, value: options };
 }
 
+/**
+ * `recommended` is required with options and must be one of them.  Without
+ * options it must be absent: free-text questions have no labels to recommend.
+ */
+export function normalizeRecommended(
+	value: unknown,
+	options: string[] | null,
+): Validation<string | null> {
+	if (options === null) {
+		if (value === undefined || value === null) return { ok: true, value: null };
+		return fail("recommended requires options");
+	}
+	if (typeof value !== "string") return fail("recommended is required when options are set");
+	const recommended = value.trim();
+	if (!options.includes(recommended)) return fail("recommended must be one of the options");
+	return { ok: true, value: recommended };
+}
+
+/**
+ * The TUI list: the recommended label first with the marker, then the other
+ * labels, then the free-text row when allowed.  `byLabel` maps a displayed
+ * label back to the raw label so the answer is never the decorated string.
+ * The free-text row keeps `その他（自由入力）`; a model option with that exact
+ * label is shown as `その他（自由入力）（選択肢）`.  Other collisions with
+ * user-supplied labels are resolved by appending `…`.
+ */
+export type OptionDisplay = {
+	labels: string[];
+	byLabel: Map<string, string>;
+	freeTextLabel: string | null;
+};
+
+export function displayOptions(
+	options: string[],
+	recommended: string | null,
+	freeText: boolean,
+): OptionDisplay {
+	const order =
+		recommended !== null && options.includes(recommended)
+			? [recommended, ...options.filter((label) => label !== recommended)]
+			: options;
+	const used = new Set<string>();
+	const unique = (candidate: string): string => {
+		let label = candidate;
+		while (used.has(label)) label = `${label}…`;
+		used.add(label);
+		return label;
+	};
+	const labels: string[] = [];
+	const byLabel = new Map<string, string>();
+	for (const option of order) {
+		let shown = option === recommended ? `${RECOMMENDED_PREFIX}${option}` : option;
+		if (freeText && shown === FREE_TEXT_LABEL) shown = `${shown}（選択肢）`;
+		shown = unique(shown);
+		labels.push(shown);
+		byLabel.set(shown, option);
+	}
+	let freeTextLabel: string | null = null;
+	if (freeText) {
+		// The option loop above never leaves this exact label in `used`.
+		freeTextLabel = FREE_TEXT_LABEL;
+		used.add(freeTextLabel);
+		labels.push(freeTextLabel);
+	}
+	return { labels, byLabel, freeTextLabel };
+}
+
 /** Free-text answers keep internal newlines and tabs, trimmed at the ends. */
 export function validateAnswerText(value: unknown): Validation<string> {
 	if (typeof value !== "string") return fail("answer text must be a string");
@@ -235,7 +314,24 @@ export function parsePending(body: string): PendingQuestion | null {
 	if (!Object.hasOwn(record, "options")) return null;
 	const options = normalizeOptions(record.options);
 	if (!options.ok) return null;
-	return { v: FORMAT_VERSION, id: record.id, question: question.value, options: options.value };
+	// The recommendation is a decoration: a stale or malformed value must not
+	// hide the question.  `freeText` is a capability flag; only `true` enables
+	// it, and a text-only question always accepts text.
+	const recommended =
+		options.value !== null &&
+		typeof record.recommended === "string" &&
+		options.value.includes(record.recommended)
+			? record.recommended
+			: null;
+	const freeText = record.freeText === true || options.value === null;
+	return {
+		v: FORMAT_VERSION,
+		id: record.id,
+		question: question.value,
+		options: options.value,
+		recommended,
+		freeText,
+	};
 }
 
 /**
@@ -270,17 +366,23 @@ export function parseAnswerFile(body: string): AnswerFile | null {
 	return null;
 }
 
-/** An option must be one of the offered labels; text only when there are none. */
+/**
+ * An option must be one of the offered labels.  Text is accepted when the
+ * question has no options or when `freeText` is set (the current behavior).
+ */
 export function validateAnswerForQuestion(
 	answer: AskAnswer,
 	options: string[] | null,
+	freeText = false,
 ): Validation<AskAnswer> {
 	if (answer.kind === "option") {
 		if (options === null) return fail("an option answer requires a question with options");
 		if (!options.includes(answer.label)) return fail("the answer is not one of the offered options");
 		return { ok: true, value: answer };
 	}
-	if (options !== null) return fail("a free-text answer requires a question without options");
+	if (options !== null && !freeText) {
+		return fail("a free-text answer requires a question that allows free text");
+	}
 	const text = validateAnswerText(answer.text);
 	if (!text.ok) return fail(text.error);
 	return { ok: true, value: { kind: "text", text: text.value } };
@@ -355,7 +457,7 @@ export function createAskUserController(options: AskUserControllerOptions): AskU
 			// A mismatched id may be the next question's answer that was renamed
 			// into place between our read and our delete.  Leave it alone.
 			if (parsed === null || parsed.id !== id) return;
-			const valid = validateAnswerForQuestion(parsed.answer, request.options);
+			const valid = validateAnswerForQuestion(parsed.answer, request.options, request.freeText);
 			if (!valid.ok) return;
 			winner = "file";
 			fileAnswer = valid.value;
@@ -390,6 +492,8 @@ export function createAskUserController(options: AskUserControllerOptions): AskU
 							id,
 							question: request.question,
 							options: request.options,
+							recommended: request.recommended,
+							freeText: request.freeText,
 						}),
 					);
 				} catch {
@@ -406,7 +510,7 @@ export function createAskUserController(options: AskUserControllerOptions): AskU
 				}
 			}
 
-			const tuiValue = await request.prompt(dialog.signal);
+			const tuiAnswer = await request.prompt(dialog.signal);
 
 			if (winner === "file" && fileAnswer !== null) {
 				return { status: "answered", answer: fileAnswer, winner: "file" };
@@ -416,17 +520,13 @@ export function createAskUserController(options: AskUserControllerOptions): AskU
 			stopPolling();
 			winner = "tui";
 
-			if (tuiValue === undefined) return { status: "dismissed" };
-			if (request.options !== null) {
-				if (!request.options.includes(tuiValue)) {
-					return { status: "invalid", error: "the selected answer is not one of the offered options" };
-				}
-				return { status: "answered", answer: { kind: "option", label: tuiValue }, winner: "tui" };
+			if (tuiAnswer === undefined) return { status: "dismissed" };
+			if (tuiAnswer.kind === "text" && tuiAnswer.text.trim() === "") {
+				return { status: "dismissed" };
 			}
-			if (tuiValue.trim() === "") return { status: "dismissed" };
-			const text = validateAnswerText(tuiValue);
-			if (!text.ok) return { status: "invalid", error: text.error };
-			return { status: "answered", answer: { kind: "text", text: text.value }, winner: "tui" };
+			const valid = validateAnswerForQuestion(tuiAnswer, request.options, request.freeText);
+			if (!valid.ok) return { status: "invalid", error: valid.error };
+			return { status: "answered", answer: valid.value, winner: "tui" };
 		} finally {
 			stopPolling();
 			signal?.removeEventListener("abort", onExternalAbort);

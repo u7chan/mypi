@@ -5,7 +5,9 @@ import {
 	BLOCKED_LABEL,
 	codePointLength,
 	createAskUserController,
+	displayOptions,
 	FORMAT_VERSION,
+	FREE_TEXT_LABEL,
 	isValidUuid,
 	MAX_ANSWER_BYTES,
 	MAX_ANSWER_CODEPOINTS,
@@ -16,11 +18,13 @@ import {
 	MIN_OPTIONS,
 	normalizeOptions,
 	normalizeQuestion,
+	normalizeRecommended,
 	parseAnswerFile,
 	parsePending,
 	PENDING_SUFFIX,
 	pendingPathFor,
 	POLL_INTERVAL_MS,
+	RECOMMENDED_PREFIX,
 	serializeAnswer,
 	serializePending,
 	validateAnswerForQuestion,
@@ -95,6 +99,27 @@ function createClock() {
 /** A dialog whose promise resolves `undefined` on abort, like Pi's. */
 function createDialog() {
 	const signals: AbortSignal[] = [];
+	let resolve: (value: AskAnswer | undefined) => void = () => {};
+	const prompt = (signal: AbortSignal) => {
+		signals.push(signal);
+		return new Promise<AskAnswer | undefined>((done) => {
+			resolve = done;
+			signal.addEventListener("abort", () => done(undefined), { once: true });
+		});
+	};
+	return {
+		prompt,
+		signals,
+		answer: (value: AskAnswer | undefined) => resolve(value),
+		answerOption: (label: string) => resolve({ kind: "option", label }),
+		answerText: (text: string) => resolve({ kind: "text", text }),
+		signal: () => signals.at(-1),
+	};
+}
+
+/** The TUI select/input adapters still exchange plain strings. */
+function createStringDialog() {
+	const signals: AbortSignal[] = [];
 	let resolve: (value: string | undefined) => void = () => {};
 	const prompt = (signal: AbortSignal) => {
 		signals.push(signal);
@@ -130,12 +155,27 @@ function setup(options: { failWrite?: boolean; readThrows?: boolean } = {}) {
 function request(
 	controller: AskUserController,
 	dialog: ReturnType<typeof createDialog>,
-	options: { question?: string; choices?: string[] | null; route?: AskUserRoute | null; signal?: AbortSignal } = {},
+	options: {
+		question?: string;
+		choices?: string[] | null;
+		recommended?: string | null;
+		freeText?: boolean;
+		route?: AskUserRoute | null;
+		signal?: AbortSignal;
+	} = {},
 ) {
+	const choices = options.choices === undefined ? ["A", "B"] : options.choices;
 	return controller.ask(
 		{
 			question: options.question ?? "Which one?",
-			options: options.choices === undefined ? ["A", "B"] : options.choices,
+			options: choices,
+			recommended:
+				options.recommended === undefined
+					? choices === null
+						? null
+						: choices[0] ?? null
+					: options.recommended,
+			freeText: options.freeText ?? true,
 			route: options.route === undefined ? ROUTE : options.route,
 			prompt: dialog.prompt,
 		},
@@ -181,6 +221,49 @@ describe("question and option validation", () => {
 		expect(MAX_OPTIONS).toBe(6);
 	});
 
+	test("recommended is required with options and must be one of them", () => {
+		expect(normalizeRecommended(undefined, null)).toEqual({ ok: true, value: null });
+		expect(normalizeRecommended(null, null)).toEqual({ ok: true, value: null });
+		expect(normalizeRecommended("A", null).ok).toBe(false);
+		expect(normalizeRecommended(undefined, ["A", "B"]).ok).toBe(false);
+		expect(normalizeRecommended(" C ", ["A", "B"]).ok).toBe(false);
+		expect(normalizeRecommended(" B ", ["A", "B"])).toEqual({ ok: true, value: "B" });
+	});
+
+	test("the TUI list puts the recommended label first and maps it back to the raw label", () => {
+		expect(displayOptions(["A", "B", "C"], "B", true)).toEqual({
+			labels: ["推奨💡 B", "A", "C", FREE_TEXT_LABEL],
+			byLabel: new Map([
+				["推奨💡 B", "B"],
+				["A", "A"],
+				["C", "C"],
+			]),
+			freeTextLabel: FREE_TEXT_LABEL,
+		});
+		expect(displayOptions(["A", "B"], "A", false)).toEqual({
+			labels: [`${RECOMMENDED_PREFIX}A`, "B"],
+			byLabel: new Map([
+				[`${RECOMMENDED_PREFIX}A`, "A"],
+				["B", "B"],
+			]),
+			freeTextLabel: null,
+		});
+	});
+
+	test("the free-text row keeps its label when the model offers the same label", () => {
+		const display = displayOptions([FREE_TEXT_LABEL, "B"], "B", true);
+		expect(new Set(display.labels).size).toBe(display.labels.length);
+		expect(display.freeTextLabel).toBe(FREE_TEXT_LABEL);
+		expect(display.labels).toEqual([
+			`${RECOMMENDED_PREFIX}B`,
+			`${FREE_TEXT_LABEL}（選択肢）`,
+			FREE_TEXT_LABEL,
+		]);
+		expect(display.byLabel.get(`${FREE_TEXT_LABEL}（選択肢）`)).toBe(FREE_TEXT_LABEL);
+		// The canonical row always means free text, never the model option.
+		expect(display.byLabel.get(FREE_TEXT_LABEL)).toBeUndefined();
+	});
+
 	test("free-text answers are trimmed and keep internal newlines and tabs", () => {
 		expect(validateAnswerText("  first\nsecond\tthird  ")).toEqual({
 			ok: true,
@@ -197,11 +280,19 @@ describe("question and option validation", () => {
 });
 
 describe("file contract", () => {
-	const pending = { v: FORMAT_VERSION, id: ID, question: "Which one?", options: ["A", "B"] } as const;
+	const pending = {
+		v: FORMAT_VERSION,
+		id: ID,
+		question: "Which one?",
+		options: ["A", "B"],
+		recommended: "A",
+		freeText: true,
+	} as const;
 
 	test("serializes one JSON line with a trailing newline", () => {
 		expect(serializePending(pending)).toBe(`${JSON.stringify(pending)}\n`);
-		expect(serializePending({ ...pending, options: null })).toContain('"options":null');
+		expect(serializePending({ ...pending, options: null, recommended: null })).toContain('"options":null');
+		expect(serializePending({ ...pending, options: null, recommended: null })).toContain('"recommended":null');
 		const answer = { v: FORMAT_VERSION, id: ID, answer: { kind: "option", label: "A" } } as const;
 		expect(serializeAnswer(answer)).toBe(`${JSON.stringify(answer)}\n`);
 	});
@@ -209,6 +300,20 @@ describe("file contract", () => {
 	test("round-trips pending and answers", () => {
 		expect(parsePending(serializePending(pending))).toEqual(pending);
 		expect(parsePending(serializePending({ ...pending, question: "a\r\nb" }))?.question).toBe("a\nb");
+		// An old v1 pending has neither field.  The recommendation is dropped and
+		// text stays unavailable while options are present.
+		expect(
+			parsePending(JSON.stringify({ v: 1, id: ID, question: "Q", options: ["A", "B"] })),
+		).toEqual({ v: 1, id: ID, question: "Q", options: ["A", "B"], recommended: null, freeText: false });
+		expect(
+			parsePending(JSON.stringify({ v: 1, id: ID, question: "Q", options: null })),
+		).toMatchObject({ recommended: null, freeText: true });
+		// A recommendation that is not an offered label is a decoration error.
+		expect(
+			parsePending(
+				JSON.stringify({ ...pending, recommended: "C" }),
+			)?.recommended,
+		).toBeNull();
 		expect(parseAnswerFile(serializeAnswer({ v: FORMAT_VERSION, id: ID, answer: { kind: "option", label: "A" } })))
 			.toEqual({ v: FORMAT_VERSION, id: ID, answer: { kind: "option", label: "A" } });
 		expect(
@@ -247,11 +352,15 @@ describe("file contract", () => {
 		expect(parseAnswerFile(`${"x".repeat(MAX_ANSWER_BYTES + 1)}`)).toBeNull();
 	});
 
-	test("an option must be offered and free text only when there are no options", () => {
+	test("an option must be offered; text needs free text or no options", () => {
 		expect(validateAnswerForQuestion({ kind: "option", label: "A" }, ["A", "B"]).ok).toBe(true);
 		expect(validateAnswerForQuestion({ kind: "option", label: "C" }, ["A", "B"]).ok).toBe(false);
 		expect(validateAnswerForQuestion({ kind: "option", label: "A" }, null).ok).toBe(false);
 		expect(validateAnswerForQuestion({ kind: "text", text: "hello" }, ["A", "B"]).ok).toBe(false);
+		expect(validateAnswerForQuestion({ kind: "text", text: "  hello  " }, ["A", "B"], true)).toEqual({
+			ok: true,
+			value: { kind: "text", text: "hello" } satisfies AskAnswer,
+		});
 		expect(validateAnswerForQuestion({ kind: "text", text: "hello" }, null)).toEqual({
 			ok: true,
 			value: { kind: "text", text: "hello" } satisfies AskAnswer,
@@ -270,11 +379,13 @@ describe("TUI and Web race", () => {
 			id: ID,
 			question: "Which one?",
 			options: ["A", "B"],
+			recommended: "A",
+			freeText: true,
 		});
 		expect(h.blocked).toEqual([true]);
 		expect(h.pendingTimers()).toBe(1);
 
-		dialog.answer("B");
+		dialog.answerOption("B");
 		expect(await promise).toEqual({
 			status: "answered",
 			answer: { kind: "option", label: "B" },
@@ -297,7 +408,7 @@ describe("TUI and Web race", () => {
 		const dialog = createDialog();
 		const promise = request(h.controller, dialog, { choices: null });
 		expect(JSON.parse(h.files.get(PENDING) ?? "{}").options).toBeNull();
-		dialog.answer("  first\nsecond\t  ");
+		dialog.answerText("  first\nsecond\t  ");
 		expect(await promise).toEqual({
 			status: "answered",
 			answer: { kind: "text", text: "first\nsecond" },
@@ -319,7 +430,7 @@ describe("TUI and Web race", () => {
 		const h = setup();
 		const dialog = createDialog();
 		const promise = request(h.controller, dialog, { choices: null });
-		dialog.answer("   ");
+		dialog.answerText("   ");
 		expect(await promise).toEqual({ status: "dismissed" });
 	});
 
@@ -372,7 +483,7 @@ describe("TUI and Web race", () => {
 	test("an answer outside the offered options is ignored", async () => {
 		const h = setup();
 		const dialog = createDialog();
-		const promise = request(h.controller, dialog);
+		const promise = request(h.controller, dialog, { freeText: false });
 
 		h.files.set(ANSWER, serializeAnswer({ v: FORMAT_VERSION, id: ID, answer: { kind: "option", label: "C" } }));
 		h.advance(POLL_INTERVAL_MS);
@@ -382,8 +493,24 @@ describe("TUI and Web race", () => {
 		h.advance(POLL_INTERVAL_MS);
 		expect(dialog.signal()?.aborted).toBe(false);
 
-		dialog.answer("A");
+		dialog.answerOption("A");
 		expect(await promise).toMatchObject({ winner: "tui" });
+	});
+
+	test("a Web text answer wins when the question allows free text", async () => {
+		const h = setup();
+		const dialog = createDialog();
+		const promise = request(h.controller, dialog, { freeText: true });
+
+		h.files.set(ANSWER, serializeAnswer({ v: FORMAT_VERSION, id: ID, answer: { kind: "text", text: "  custom  " } }));
+		h.advance(POLL_INTERVAL_MS);
+
+		expect(dialog.signal()?.aborted).toBe(true);
+		expect(await promise).toEqual({
+			status: "answered",
+			answer: { kind: "text", text: "custom" },
+			winner: "file",
+		});
 	});
 
 	test("a TUI answer that lands before the next poll wins and removes the Web file", async () => {
@@ -391,7 +518,7 @@ describe("TUI and Web race", () => {
 		const dialog = createDialog();
 		const promise = request(h.controller, dialog);
 		h.files.set(ANSWER, serializeAnswer({ v: FORMAT_VERSION, id: ID, answer: { kind: "option", label: "A" } }));
-		dialog.answer("B");
+		dialog.answerOption("B");
 		expect(await promise).toEqual({
 			status: "answered",
 			answer: { kind: "option", label: "B" },
@@ -424,7 +551,7 @@ describe("TUI and Web race", () => {
 		expect(dialog.signals).toEqual([]);
 
 		const next = request(h.controller, dialog);
-		dialog.answer("A");
+		dialog.answerOption("A");
 		expect((await next).status).toBe("answered");
 	});
 
@@ -438,7 +565,7 @@ describe("TUI and Web race", () => {
 		expect(h.ops().filter((entry) => entry === `write:${PENDING}`)).toHaveLength(1);
 		expect(h.blocked).toEqual([true]);
 
-		firstDialog.answer("A");
+		firstDialog.answerOption("A");
 		expect((await first).status).toBe("answered");
 		expect(h.blocked).toEqual([true, false]);
 	});
@@ -447,7 +574,7 @@ describe("TUI and Web race", () => {
 		const h = setup();
 		const dialog = createDialog();
 		const promise = request(h.controller, dialog, { route: null });
-		dialog.answer("A");
+		dialog.answerOption("A");
 		expect(await promise).toEqual({
 			status: "answered",
 			answer: { kind: "option", label: "A" },
@@ -467,7 +594,7 @@ describe("TUI and Web race", () => {
 		h.advance(POLL_INTERVAL_MS * 4);
 		expect(h.ops().filter((entry) => entry.startsWith("read:"))).toEqual([]);
 
-		dialog.answer("A");
+		dialog.answerOption("A");
 		expect((await promise).status).toBe("answered");
 		expect(h.blocked).toEqual([]);
 		// Only the stale cleanup and the attempted write; no post-cleanup.
@@ -489,7 +616,7 @@ describe("TUI and Web race", () => {
 			`remove:${ANSWER}`,
 			`write:${PENDING}`,
 		]);
-		dialog.answer("A");
+		dialog.answerOption("A");
 		await promise;
 	});
 
@@ -499,7 +626,7 @@ describe("TUI and Web race", () => {
 		const promise = request(h.controller, dialog);
 		h.advance(POLL_INTERVAL_MS);
 		expect(dialog.signal()?.aborted).toBe(false);
-		dialog.answer("A");
+		dialog.answerOption("A");
 		expect((await promise).status).toBe("answered");
 	});
 
@@ -507,10 +634,10 @@ describe("TUI and Web race", () => {
 		const h = setup();
 		const dialog = createDialog();
 		const promise = request(h.controller, dialog);
-		dialog.answer("not offered");
+		dialog.answerOption("not offered");
 		expect(await promise).toEqual({
 			status: "invalid",
-			error: "the selected answer is not one of the offered options",
+			error: "the answer is not one of the offered options",
 		});
 		expect(h.blocked).toEqual([true, false]);
 	});
@@ -519,7 +646,7 @@ describe("TUI and Web race", () => {
 		const h = setup();
 		const dialog = createDialog();
 		const promise = request(h.controller, dialog, { choices: null });
-		dialog.answer("x".repeat(MAX_ANSWER_CODEPOINTS + 1));
+		dialog.answerText("x".repeat(MAX_ANSWER_CODEPOINTS + 1));
 		expect(await promise).toMatchObject({ status: "invalid" });
 	});
 });
@@ -586,16 +713,24 @@ function register(options: { failWrite?: boolean; env?: Record<string, string | 
 describe("extension adapter", () => {
 	test("Herdr TUI writes the pending file, reports blocked, and cleans up on abort", async () => {
 		const h = register();
-		const dialog = createDialog();
+		const dialog = createStringDialog();
 		const { ctx } = createContext({ select: (_title, _choices, opts) => dialog.prompt(opts!.signal!) });
 		const controller = new AbortController();
-		const running = h.tool.execute("call-1", { question: "Deploy?", options: ["Yes", "No"] }, controller.signal, undefined, ctx);
+		const running = h.tool.execute(
+			"call-1",
+			{ question: "Deploy?", options: ["Yes", "No"], recommended: "Yes" },
+			controller.signal,
+			undefined,
+			ctx,
+		);
 
 		expect(parsePending(h.files.get(PENDING) ?? "")).toEqual({
 			v: FORMAT_VERSION,
 			id: ID,
 			question: "Deploy?",
 			options: ["Yes", "No"],
+			recommended: "Yes",
+			freeText: true,
 		});
 		expect(h.events).toEqual([
 			{ channel: "herdr:blocked", data: { active: true, label: BLOCKED_LABEL } },
@@ -619,7 +754,13 @@ describe("extension adapter", () => {
 		const option = register();
 		const optionContext = createContext({ select: async () => "Yes" });
 		expect(
-			await option.tool.execute("call-2", { question: "Go?", options: ["Yes", "No"] }, undefined, undefined, optionContext.ctx),
+			await option.tool.execute(
+				"call-2",
+				{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+				undefined,
+				undefined,
+				optionContext.ctx,
+			),
 		).toEqual({
 			content: [{ type: "text", text: "ユーザーの回答: Yes" }],
 			details: { status: "answered", winner: "tui", kind: "option" },
@@ -637,7 +778,13 @@ describe("extension adapter", () => {
 		const dismissed = register();
 		const dismissedContext = createContext({ select: async () => undefined });
 		expect(
-			await dismissed.tool.execute("call-4", { question: "Go?", options: ["Yes", "No"] }, undefined, undefined, dismissedContext.ctx),
+			await dismissed.tool.execute(
+				"call-4",
+				{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+				undefined,
+				undefined,
+				dismissedContext.ctx,
+			),
 		).toEqual({
 			content: [{ type: "text", text: "ユーザーは回答しませんでした。" }],
 			details: { status: "dismissed" },
@@ -653,16 +800,79 @@ describe("extension adapter", () => {
 				return "No";
 			},
 		});
-		await h.tool.execute("call-5", { question: "Go?", options: ["Yes", "No"] }, undefined, undefined, ctx);
-		expect(calls).toEqual([{ kind: "select", title: "Go?", choices: ["Yes", "No"] }]);
+		await h.tool.execute(
+			"call-5",
+			{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(calls).toEqual([
+			{
+				kind: "select",
+				title: "Go?",
+				choices: [`${RECOMMENDED_PREFIX}Yes`, "No", FREE_TEXT_LABEL],
+			},
+		]);
 		expect(signal).toBeInstanceOf(AbortSignal);
+	});
+
+	test("selecting the recommended row returns the raw label, not the decorated one", async () => {
+		const h = register();
+		const { ctx } = createContext({ select: async () => `${RECOMMENDED_PREFIX}Yes` });
+		expect(
+			await h.tool.execute(
+				"call-14",
+				{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+				undefined,
+				undefined,
+				ctx,
+			),
+		).toEqual({
+			content: [{ type: "text", text: "ユーザーの回答: Yes" }],
+			details: { status: "answered", winner: "tui", kind: "option" },
+		});
+	});
+
+	test("the last row opens free text even when options are present", async () => {
+		const h = register();
+		const { ctx, calls } = createContext({
+			select: async () => FREE_TEXT_LABEL,
+			input: async () => "  maybe  ",
+		});
+		expect(
+			await h.tool.execute(
+				"call-15",
+				{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+				undefined,
+				undefined,
+				ctx,
+			),
+		).toEqual({
+			content: [{ type: "text", text: "ユーザーの回答: maybe" }],
+			details: { status: "answered", winner: "tui", kind: "text" },
+		});
+		expect(calls).toEqual([
+			{
+				kind: "select",
+				title: "Go?",
+				choices: [`${RECOMMENDED_PREFIX}Yes`, "No", FREE_TEXT_LABEL],
+			},
+			{ kind: "input", title: "Go?" },
+		]);
 	});
 
 	test("RPC and Herdr env still use only the dialog, with no file or blocked report", async () => {
 		const h = register();
-		const dialog = createDialog();
+		const dialog = createStringDialog();
 		const { ctx } = createContext({ mode: "rpc", select: (_title, _choices, opts) => dialog.prompt(opts!.signal!) });
-		const running = h.tool.execute("call-6", { question: "Go?", options: ["Yes", "No"] }, undefined, undefined, ctx);
+		const running = h.tool.execute(
+			"call-6",
+			{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+			undefined,
+			undefined,
+			ctx,
+		);
 		dialog.answer("Yes");
 		expect(await running).toMatchObject({ details: { status: "answered", winner: "tui" } });
 		expect(h.log).toEqual([]);
@@ -679,7 +889,13 @@ describe("extension adapter", () => {
 			const h = register({ env });
 			const { ctx } = createContext({ select: async () => "Yes" });
 			expect(
-				await h.tool.execute("call-7", { question: "Go?", options: ["Yes", "No"] }, undefined, undefined, ctx),
+				await h.tool.execute(
+					"call-7",
+					{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+					undefined,
+					undefined,
+					ctx,
+				),
 			).toMatchObject({ details: { status: "answered" } });
 			expect(h.log).toEqual([]);
 			expect(h.events).toEqual([]);
@@ -688,7 +904,13 @@ describe("extension adapter", () => {
 		const h = register();
 		const { ctx } = createContext({ sessionFile: null, select: async () => "Yes" });
 		expect(
-			await h.tool.execute("call-8", { question: "Go?", options: ["Yes", "No"] }, undefined, undefined, ctx),
+			await h.tool.execute(
+				"call-8",
+				{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+				undefined,
+				undefined,
+				ctx,
+			),
 		).toMatchObject({ details: { status: "answered" } });
 		expect(h.log).toEqual([]);
 		expect(h.events).toEqual([]);
@@ -714,6 +936,9 @@ describe("extension adapter", () => {
 		for (const params of [
 			{ question: "" },
 			{ question: "x", options: ["only"] },
+			{ question: "x", options: ["A", "B"] },
+			{ question: "x", options: ["A", "B"], recommended: "C" },
+			{ question: "x", recommended: "A" },
 			{ question: "x".repeat(MAX_QUESTION_CODEPOINTS + 1) },
 			{ question: "ok\u0000" },
 		]) {
@@ -730,18 +955,36 @@ describe("extension adapter", () => {
 		const h = register({ failWrite: true });
 		const { ctx } = createContext({ select: async () => "Yes" });
 		expect(
-			await h.tool.execute("call-11", { question: "Go?", options: ["Yes", "No"] }, undefined, undefined, ctx),
+			await h.tool.execute(
+				"call-11",
+				{ question: "Go?", options: ["Yes", "No"], recommended: "Yes" },
+				undefined,
+				undefined,
+				ctx,
+			),
 		).toMatchObject({ details: { status: "answered", winner: "tui" } });
 		expect(h.events).toEqual([]);
 	});
 
 	test("a second parallel call reports busy and the first keeps the slot", async () => {
 		const h = register();
-		const dialog = createDialog();
+		const dialog = createStringDialog();
 		const { ctx } = createContext({ select: (_title, _choices, opts) => dialog.prompt(opts!.signal!) });
-		const first = h.tool.execute("call-12", { question: "One?", options: ["A", "B"] }, undefined, undefined, ctx);
+		const first = h.tool.execute(
+			"call-12",
+			{ question: "One?", options: ["A", "B"], recommended: "A" },
+			undefined,
+			undefined,
+			ctx,
+		);
 		expect(
-			await h.tool.execute("call-13", { question: "Two?", options: ["A", "B"] }, undefined, undefined, ctx),
+			await h.tool.execute(
+				"call-13",
+				{ question: "Two?", options: ["A", "B"], recommended: "A" },
+				undefined,
+				undefined,
+				ctx,
+			),
 		).toEqual({
 			content: [
 				{

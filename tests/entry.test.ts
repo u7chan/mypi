@@ -302,7 +302,7 @@ test("ask_user reports herdr:blocked only while a Herdr TUI question waits", asy
 		const controller = new AbortController();
 		const running = h.tools.get("ask_user").execute(
 			"entry-ask",
-			{ question: "Deploy?", options: ["Yes", "No"] },
+			{ question: "Deploy?", options: ["Yes", "No"], recommended: "Yes" },
 			controller.signal,
 			undefined,
 			h.ctx,
@@ -313,8 +313,12 @@ test("ask_user reports herdr:blocked only while a Herdr TUI question waits", asy
 			v: 1,
 			question: "Deploy?",
 			options: ["Yes", "No"],
+			recommended: "Yes",
+			freeText: true,
 		});
-		expect(h.dialogCalls).toEqual([{ title: "Deploy?", options: ["Yes", "No"] }]);
+		expect(h.dialogCalls).toEqual([
+			{ title: "Deploy?", options: ["推奨💡 Yes", "No", "その他（自由入力）"] },
+		]);
 
 		controller.abort();
 		const result = await running;
@@ -335,7 +339,7 @@ test("ask_user reports herdr:blocked only while a Herdr TUI question waits", asy
 		const plain = createHarness({ sessionFile: plainSession, dialog: async () => "Yes" });
 		const plainResult = await plain.tools.get("ask_user").execute(
 			"entry-ask-plain",
-			{ question: "Deploy?", options: ["Yes", "No"] },
+			{ question: "Deploy?", options: ["Yes", "No"], recommended: "Yes" },
 			undefined,
 			undefined,
 			plain.ctx,
