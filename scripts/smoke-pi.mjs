@@ -64,7 +64,7 @@ try {
 	assert.equal(extension.handlers.get("message_update").length, 2);
 	assert.equal(extension.handlers.get("agent_settled").length, 4);
 	assert.deepEqual([...extension.commands.keys()], ["minimal-footer", "dm", "default-model"]);
-	assert.deepEqual([...extension.tools.keys()], ["set_default_model"]);
+	assert.deepEqual([...extension.tools.keys()], ["set_default_model", "ask_user"]);
 
 	// A Herdr pane adds the hwc bridge.  Use a second loader so the session's
 	// base registration stays exactly as above, then restore the inherited env.
@@ -136,6 +136,9 @@ try {
 	const theme = { fg: (_color, text) => text };
 	const uiContext = {
 		theme,
+		// ask_user adapters: choose the first offered option, or type a fixed text.
+		select: async (_title, options) => options[0],
+		input: async () => "fixture answer",
 		setStatus(key, text) { if (text === undefined) statuses.delete(key); else statuses.set(key, text); },
 		setWorkingMessage(message) { working.push(message); },
 		notify(message, type) { notices.push({ message, type }); },
@@ -197,12 +200,25 @@ try {
 	assert.match(result.content[0].text, /Saved mypi-smoke\/fixture-model/);
 	assert.equal(result.isError, undefined);
 	assert.equal(notices.at(-1).type, "info");
+
+	// ask_user without a Herdr pane uses only the dialog (no file contract).
+	const askCtx = session.extensionRunner.createToolContext("fixture-ask");
+	const askedOption = await extension.tools.get("ask_user").definition.execute(
+		"fixture-ask", { question: "Which fixture?", options: ["Alpha", "Beta"] }, undefined, undefined, askCtx,
+	);
+	assert.deepEqual(askedOption.content, [{ type: "text", text: "ユーザーの回答: Alpha" }]);
+	assert.deepEqual(askedOption.details, { status: "answered", winner: "tui", kind: "option" });
+	const askedText = await extension.tools.get("ask_user").definition.execute(
+		"fixture-ask-text", { question: "What should the fixture say?" }, undefined, undefined, askCtx,
+	);
+	assert.deepEqual(askedText.content, [{ type: "text", text: "ユーザーの回答: fixture answer" }]);
+	assert.deepEqual(askedText.details, { status: "answered", winner: "tui", kind: "text" });
 	await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 	assert.equal(statuses.size, 0);
 	component?.dispose(); component = undefined;
 	assert.equal(branchSubscriptions, 0);
 	assert.deepEqual(errors, []);
-	console.log(`Pi ${JSON.parse(readFileSync(join(host, "package.json"), "utf8")).version}: one entry, nine features, retry ${duration}ms, isolated settings, cleanup OK`);
+	console.log(`Pi ${JSON.parse(readFileSync(join(host, "package.json"), "utf8")).version}: one entry, ten features, retry ${duration}ms, isolated settings, cleanup OK`);
 } finally {
 	if (session) {
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });

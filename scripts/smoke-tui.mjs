@@ -22,9 +22,20 @@ const server = createServer(async (request, response) => {
 	send({ role: "assistant", content: "" });
 	await sleep(2200);
 	const last = payload.messages.at(-1);
-	if (last?.role === "user" && JSON.stringify(last.content).includes("save-default")) {
+	const lastText = JSON.stringify(last?.content);
+	if (last?.role === "user" && lastText.includes("save-default")) {
 		send({ tool_calls: [{ index: 0, id: "fixture-call", type: "function", function: {
 			name: "set_default_model", arguments: JSON.stringify({ provider: "mypi-smoke", model: "fixture-model", thinkingLevel: "high" }),
+		} }] });
+		send({}, "tool_calls");
+	} else if (last?.role === "user" && lastText.includes("ask-user-option")) {
+		send({ tool_calls: [{ index: 0, id: "fixture-ask", type: "function", function: {
+			name: "ask_user", arguments: JSON.stringify({ question: "Which fixture?", options: ["Alpha", "Beta"] }),
+		} }] });
+		send({}, "tool_calls");
+	} else if (last?.role === "user" && lastText.includes("ask-user-text")) {
+		send({ tool_calls: [{ index: 0, id: "fixture-ask", type: "function", function: {
+			name: "ask_user", arguments: JSON.stringify({ question: "What should the fixture say?" }),
 		} }] });
 		send({}, "tool_calls");
 	} else {
@@ -58,8 +69,10 @@ try {
 		},
 	} }));
 	console.log("Isolated TUI: try a prompt, save-default, /dm show, /dm mypi-smoke/other-model:high, /minimal-footer, /quit.");
+	console.log("ask_user: send ask-user-option and answer Alpha/Beta in the dialog; send it again and press Esc for the dismissed result.");
+	console.log("ask_user: send ask-user-text and type a free-form answer (newlines are kept; empty is dismissed).");
 	const child = spawn("pi", [
-		"--no-extensions", "--no-session", "--verbose", "--offline", "--no-approve",
+		"--no-extensions", "--verbose", "--offline", "--no-approve",
 		"--no-skills", "--no-prompt-templates", "--no-context-files", "--no-themes",
 		"--tui-mode", process.argv.includes("--fullscreen") ? "fullscreen" : "regular",
 		"--provider", "mypi-smoke", "--model", "fixture-model", "--thinking", "high", "-e", root,
