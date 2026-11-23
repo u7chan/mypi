@@ -225,7 +225,9 @@ export function normalizeRecommended(
  * The TUI list: the recommended label first with the marker, then the other
  * labels, then the free-text row when allowed.  `byLabel` maps a displayed
  * label back to the raw label so the answer is never the decorated string.
- * Collisions with user-supplied labels are resolved by appending `…`.
+ * The free-text row keeps `その他（自由入力）`; a model option with that exact
+ * label is shown as `その他（自由入力）（選択肢）`.  Other collisions with
+ * user-supplied labels are resolved by appending `…`.
  */
 export type OptionDisplay = {
 	labels: string[];
@@ -252,13 +254,17 @@ export function displayOptions(
 	const labels: string[] = [];
 	const byLabel = new Map<string, string>();
 	for (const option of order) {
-		const shown = unique(option === recommended ? `${RECOMMENDED_PREFIX}${option}` : option);
+		let shown = option === recommended ? `${RECOMMENDED_PREFIX}${option}` : option;
+		if (freeText && shown === FREE_TEXT_LABEL) shown = `${shown}（選択肢）`;
+		shown = unique(shown);
 		labels.push(shown);
 		byLabel.set(shown, option);
 	}
 	let freeTextLabel: string | null = null;
 	if (freeText) {
-		freeTextLabel = unique(FREE_TEXT_LABEL);
+		// The option loop above never leaves this exact label in `used`.
+		freeTextLabel = FREE_TEXT_LABEL;
+		used.add(freeTextLabel);
 		labels.push(freeTextLabel);
 	}
 	return { labels, byLabel, freeTextLabel };

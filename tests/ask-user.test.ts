@@ -97,7 +97,6 @@ function createClock() {
 }
 
 /** A dialog whose promise resolves `undefined` on abort, like Pi's. */
-/** A dialog whose promise resolves `undefined` on abort, like Pi's. */
 function createDialog() {
 	const signals: AbortSignal[] = [];
 	let resolve: (value: AskAnswer | undefined) => void = () => {};
@@ -251,11 +250,18 @@ describe("question and option validation", () => {
 		});
 	});
 
-	test("display labels stay unique when the model uses a reserved-looking label", () => {
+	test("the free-text row keeps its label when the model offers the same label", () => {
 		const display = displayOptions([FREE_TEXT_LABEL, "B"], "B", true);
 		expect(new Set(display.labels).size).toBe(display.labels.length);
-		expect(display.freeTextLabel).not.toBe(FREE_TEXT_LABEL);
-		expect(display.byLabel.get(FREE_TEXT_LABEL)).toBe(FREE_TEXT_LABEL);
+		expect(display.freeTextLabel).toBe(FREE_TEXT_LABEL);
+		expect(display.labels).toEqual([
+			`${RECOMMENDED_PREFIX}B`,
+			`${FREE_TEXT_LABEL}（選択肢）`,
+			FREE_TEXT_LABEL,
+		]);
+		expect(display.byLabel.get(`${FREE_TEXT_LABEL}（選択肢）`)).toBe(FREE_TEXT_LABEL);
+		// The canonical row always means free text, never the model option.
+		expect(display.byLabel.get(FREE_TEXT_LABEL)).toBeUndefined();
 	});
 
 	test("free-text answers are trimmed and keep internal newlines and tabs", () => {
